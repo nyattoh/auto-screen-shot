@@ -1,18 +1,33 @@
 import { BrowserWindow, ipcMain, shell } from 'electron';
 import * as path from 'path';
+import * as fs from 'fs';
 import ScreenshotManager from '../screenshot/capture';
 import Settings from '../config/settings';
 import { ScreenshotData } from '../types';
+import { UsageDatabase, DailyUsage, DetailedSession, DateUsageSummary } from '../usage/UsageDatabase';
+import { logger } from '../utils/logger';
 
 export class StatisticsWindow {
     private window: BrowserWindow | null = null;
     private screenshotManager: ScreenshotManager;
     private settings: Settings;
+    private usageDatabase: UsageDatabase;
 
-    constructor(screenshotManager: ScreenshotManager, settings: Settings) {
+    constructor(screenshotManager: ScreenshotManager, settings: Settings, usageDatabase?: UsageDatabase) {
         this.screenshotManager = screenshotManager;
         this.settings = settings;
+        this.usageDatabase = usageDatabase || new UsageDatabase();
         this.setupIpcHandlers();
+        this.initializeDatabase();
+    }
+
+    private async initializeDatabase(): Promise<void> {
+        try {
+            await this.usageDatabase.initialize();
+            logger.info('統計用データベース初期化完了');
+        } catch (error) {
+            logger.error('統計用データベース初期化エラー', error);
+        }
     }
 
     private setupIpcHandlers(): void {
@@ -23,6 +38,56 @@ export class StatisticsWindow {
         ipcMain.on('open-save-folder', () => {
             shell.openPath(this.settings.getSaveDirectory());
         });
+
+        // 新しいIPC通信ハンドラー
+        ipcMain.handle('get-available-dates', async () => {
+            try {
+                return await this.usageDatabase.getAvailableDates();
+            } catch (error) {
+                logger.error('利用可能な日付の取得に失敗', error);
+                return [];
+            }
+        });
+
+        ipcMain.handle('get-date-sessions', async (event, dateStr: string) => {
+            try {
+                const date = new Date(dateStr);
+                return await this.usageDatabase.getDetailedSessions(date);
+            } catch (error) {
+                logger.error('日付別セッションの取得に失敗', error);
+                return [];
+            }
+        });
+
+        ipcMain.handle('get-application-sessions', async (event, dateStr: string, application: string) => {
+            try {
+                const date = new Date(dateStr);
+                return await this.usageDatabase.getApplicationSessions(date, application);
+            } catch (error) {
+                logger.error('アプリケーション別セッションの取得に失敗', error);
+                return [];
+            }
+        });
+
+        ipcMain.handle('get-date-summary', async (event, dateStr: string) => {
+            try {
+                const date = new Date(dateStr);
+                return await this.usageDatabase.getDateUsageSummary(date);
+            } catch (error) {
+                logger.error('日付サマリーの取得に失敗', error);
+                return null;
+            }
+        });
+
+        ipcMain.handle('get-daily-usage', async (event, dateStr: string) => {
+            try {
+                const date = new Date(dateStr);
+                return await this.usageDatabase.getDailyUsage(date);
+            } catch (error) {
+                logger.error('日別使用時間の取得に失敗', error);
+                return [];
+            }
+        });
     }
 
     public create(): void {
@@ -32,10 +97,10 @@ export class StatisticsWindow {
         }
 
         this.window = new BrowserWindow({
-            width: 900,
-            height: 700,
-            minWidth: 600,
-            minHeight: 500,
+            width: 1200,
+            height: 800,
+            minWidth: 800,
+            minHeight: 600,
             title: 'スクリーンショット統計',
             icon: path.join(__dirname, '../../assets/icon.png'),
             autoHideMenuBar: true, // メニューバーを自動非表示
@@ -66,35 +131,98 @@ export class StatisticsWindow {
         }
     }
 
+    private async getActualScreenshotCounts(): Promise<{ totalCount: number; todayCount: number }> {
+        try {
+            const saveDir = this.settings.getSaveDirectory();
+            if (!fs.existsSync(saveDir)) {
+                return { totalCount: 0, todayCount: 0 };
+            }
+
+            const files = fs.readdirSync(saveDir);
+            const screenshotFiles = files.filter(file => 
+                file.startsWith('screenshot-') && file.endsWith('.png')
+            );
+
+            const totalCount = screenshotFiles.length;
+
+            // 今日の日付文字列を生成
+            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+
+            const todayCount = screenshotFiles.filter(file => {
+                // screenshot-2025-08-02T11-24-12-808Z.png の形式から日付を抽出
+                const match = file.match(/screenshot-(\d{4}-\d{2}-\d{2})/);
+                return match && match[1] === today;
+            }).length;
+
+            logger.debug('実際のスクリーンショット数を計算', { totalCount, todayCount, today });
+            return { totalCount, todayCount };
+        } catch (error) {
+            logger.error('スクリーンショット数の計算に失敗', error);
+            return { totalCount: 0, todayCount: 0 };
+        }
+    }
+
     private async sendStatisticsData(): Promise<void> {
         if (!this.window) return;
 
-        const history = this.screenshotManager.getScreenshotHistory();
-        const dailyStats = this.computeDailyScreenTime(history);
+        try {
+            // 実際のスクリーンショットファイルを読み込んで正確な数を計算
+            const screenshotStats = await this.getActualScreenshotCounts();
+            const history = this.screenshotManager.getScreenshotHistory();
+            
+            const totalCount = screenshotStats.totalCount;
+            const todayCount = screenshotStats.todayCount;
 
-        const totalCount = history.length;
-        
-        // 今日の撮影数を計算
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todayCount = history.filter(item => {
-            const itemDate = new Date(item.timestamp);
-            itemDate.setHours(0, 0, 0, 0);
-            return itemDate.getTime() === today.getTime();
-        }).length;
+            const lastCapture = this.screenshotManager.getLastScreenshot();
 
-        const lastCapture = this.screenshotManager.getLastScreenshot();
+            // 実際の使用時間データを取得
+            const realDailyStats = await this.getRealDailyUsageStats();
+            
+            // スクリーンショット間隔ベースの統計（後方互換性のため）
+            const screenshotBasedStats = this.computeDailyScreenTime(history);
 
-        const statisticsData = {
-            totalCount,
-            todayCount,
-            isCapturing: this.screenshotManager.isCurrentlyCapturing(),
-            lastCapture: lastCapture ? lastCapture.timestamp : null,
-            history: history.slice(-20).reverse(), // 最新20件を逆順で表示
-            dailyStats,
-        };
+            const statisticsData = {
+                totalCount,
+                todayCount,
+                isCapturing: this.screenshotManager.isCurrentlyCapturing(),
+                lastCapture: lastCapture ? lastCapture.timestamp : null,
+                history: history.slice(-20).reverse(), // 最新20件を逆順で表示
+                dailyStats: screenshotBasedStats, // 後方互換性のため
+                realUsageStats: realDailyStats, // 実際の使用時間データ
+            };
 
-        this.window.webContents.send('statistics-data', statisticsData);
+            this.window.webContents.send('statistics-data', statisticsData);
+            logger.debug('統計データを送信しました', { totalCount, todayCount, realUsageStatsCount: realDailyStats.length });
+        } catch (error) {
+            logger.error('統計データ送信エラー', error);
+            
+            // エラー時は基本的なデータのみ送信
+            const history = this.screenshotManager.getScreenshotHistory();
+            const basicStats = {
+                totalCount: history.length,
+                todayCount: 0,
+                isCapturing: this.screenshotManager.isCurrentlyCapturing(),
+                lastCapture: null,
+                history: history.slice(-20).reverse(),
+                dailyStats: {},
+                realUsageStats: [],
+                error: 'データベースエラーが発生しました'
+            };
+            
+            this.window.webContents.send('statistics-data', basicStats);
+        }
+    }
+
+    private async getRealDailyUsageStats(): Promise<DailyUsage[]> {
+        try {
+            const today = new Date();
+            const dailyUsage = await this.usageDatabase.getDailyUsage(today);
+            logger.debug(`今日の使用時間データを取得: ${dailyUsage.length}件`);
+            return dailyUsage;
+        } catch (error) {
+            logger.warn('使用時間データの取得に失敗', error);
+            return [];
+        }
     }
 
     private computeDailyScreenTime(history: ScreenshotData[]): Record<string, Record<string, number>> {
@@ -131,6 +259,6 @@ export class StatisticsWindow {
     }
 }
 
-export function createStatisticsWindow(screenshotManager: ScreenshotManager, settings: Settings): StatisticsWindow {
-    return new StatisticsWindow(screenshotManager, settings);
+export function createStatisticsWindow(screenshotManager: ScreenshotManager, settings: Settings, usageDatabase?: UsageDatabase): StatisticsWindow {
+    return new StatisticsWindow(screenshotManager, settings, usageDatabase);
 }

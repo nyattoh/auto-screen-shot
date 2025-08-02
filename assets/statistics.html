@@ -139,12 +139,208 @@
             margin: 5px 0;
             color: #555;
         }
+        
+        /* 新しいスタイル */
+        .date-selector {
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-bottom: 2px solid #eee;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .date-selector label {
+            font-weight: 600;
+            color: #333;
+        }
+        
+        .date-selector input, .date-selector select {
+            padding: 8px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .sessions-section {
+            padding: 20px;
+        }
+        
+        .sessions-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        
+        .sessions-table th, .sessions-table td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .sessions-table th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+            color: #333;
+            position: sticky;
+            top: 0;
+        }
+        
+        .sessions-table tr:hover {
+            background-color: #f8f9fa;
+        }
+        
+        .category-tag {
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 500;
+            color: white;
+            text-transform: uppercase;
+        }
+        
+        .category-browser {
+            background-color: #2196F3;
+        }
+        
+        .category-development {
+            background-color: #9C27B0;
+        }
+        
+        .category-application {
+            background-color: #4CAF50;
+        }
+        
+        .category-game {
+            background-color: #FF9800;
+        }
+        
+        .category-default {
+            background-color: #757575;
+        }
+        
+        .session-time {
+            font-family: monospace;
+            font-size: 13px;
+            color: #666;
+        }
+        
+        .app-clickable {
+            cursor: pointer;
+            color: #4CAF50;
+            text-decoration: underline;
+        }
+        
+        .app-clickable:hover {
+            color: #45a049;
+        }
+        
+        .sessions-container {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        
+        .summary-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .summary-item {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        
+        .summary-number {
+            font-size: 24px;
+            font-weight: bold;
+            color: #4CAF50;
+        }
+        
+        .summary-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+        }
+        
+        .filter-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+        }
+        
+        .filter-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        
+        .filter-btn {
+            padding: 6px 12px;
+            border: 1px solid #ddd;
+            background-color: white;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        
+        .filter-btn.active {
+            background-color: #4CAF50;
+            color: white;
+            border-color: #4CAF50;
+        }
+        
+        .back-btn {
+            background-color: #6c757d;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-bottom: 15px;
+        }
+        
+        .back-btn:hover {
+            background-color: #5a6268;
+        }
+        
+        .window-title {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        
+        .duration-badge {
+            background-color: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 10px;
+            font-size: 11px;
+            color: #495057;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>📊 スクリーンショット統計</h1>
+        </div>
+        
+        <div class="date-selector">
+            <label for="dateSelect">📅 日付選択:</label>
+            <input type="date" id="dateSelect" />
+            <select id="quickDateSelect">
+                <option value="">日付を選択...</option>
+                <option value="today">今日</option>
+                <option value="yesterday">昨日</option>
+                <option value="week">過去7日間</option>
+            </select>
+            <button class="btn" onclick="loadSelectedDate()">📊 データを表示</button>
         </div>
         
         <div class="stats-grid">
@@ -166,9 +362,44 @@
             </div>
         </div>
 
+        <div class="sessions-section">
+            <div class="history-title">📊 選択した日付の詳細統計</div>
+            <div id="selectedDateSummary">
+                <p style="color: #666; font-style: italic;">日付を選択してください</p>
+            </div>
+            
+            <div id="sessionsDetailContainer" style="display: none;">
+                <div class="filter-section">
+                    <label>🔍 フィルター:</label>
+                    <div class="filter-buttons" id="filterButtons"></div>
+                </div>
+                
+                <button id="backToOverview" class="back-btn" style="display: none;" onclick="showOverview()">← 概要に戻る</button>
+                
+                <div class="sessions-container">
+                    <table class="sessions-table" id="sessionsTable">
+                        <thead>
+                            <tr>
+                                <th>時刻</th>
+                                <th>アプリケーション</th>
+                                <th>コンテンツ</th>
+                                <th>カテゴリ</th>
+                                <th>使用時間</th>
+                                <th>ウィンドウタイトル</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sessionsTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
         <div class="daily-stats">
-            <h3>日別画面時間</h3>
-            <div id="dailyTimeList"></div>
+            <h3>📈 使用時間統計</h3>
+            <div id="dailyTimeList">
+                <p style="color: #666; font-style: italic;">データを読み込み中...</p>
+            </div>
         </div>
 
         <div class="history-section">
@@ -187,6 +418,11 @@
 
     <script>
         const { ipcRenderer } = require('electron');
+        
+        let currentView = 'overview'; // 'overview' or 'application'
+        let currentDate = null;
+        let currentApplication = null;
+        let allSessions = [];
 
         function refreshStats() {
             ipcRenderer.send('request-statistics');
@@ -209,6 +445,27 @@
                 minute: '2-digit',
                 second: '2-digit'
             });
+        }
+        
+        function formatTimeShort(date) {
+            return date.toLocaleString('ja-JP', {
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+        }
+        
+        function formatDuration(milliseconds) {
+            const seconds = Math.floor(milliseconds / 1000);
+            const minutes = Math.floor(seconds / 60);
+            const hours = Math.floor(minutes / 60);
+            
+            if (hours > 0) {
+                return `${hours}時間${minutes % 60}分`;
+            } else if (minutes > 0) {
+                return `${minutes}分${seconds % 60}秒`;
+            } else {
+                return `${seconds}秒`;
+            }
         }
 
         function updateStatistics(data) {
@@ -244,22 +501,294 @@
         ipcRenderer.on('statistics-data', (event, data) => {
             updateStatistics(data);
 
-            // 日別画面時間表示
+            // 実際の使用時間データを優先表示
             const dailyList = document.getElementById('dailyTimeList');
             dailyList.innerHTML = '';
-            Object.entries(data.dailyStats).forEach(([date, screens]) => {
-                const dateDiv = document.createElement('div');
-                dateDiv.innerHTML = `<h4>${date}</h4>`;
-                Object.entries(screens).forEach(([screen, minutes]) => {
-                    dateDiv.innerHTML += `<p>${screen}: ${Math.round(minutes)} 分</p>`;
+            
+            // エラー情報がある場合は表示
+            if (data.error) {
+                dailyList.innerHTML = `<p style="color: red; font-style: italic;">⚠️ ${data.error}</p>`;
+            }
+            
+            // 実際の使用時間データがある場合
+            if (data.realUsageStats && data.realUsageStats.length > 0) {
+                const usageDiv = document.createElement('div');
+                usageDiv.innerHTML = '<h4>今日の使用時間 (実際のデータ)</h4>';
+                data.realUsageStats.forEach(usage => {
+                    const categoryColor = getCategoryColor(usage.category);
+                    usageDiv.innerHTML += `
+                        <div style="margin: 8px 0; padding: 8px; background-color: ${categoryColor}; border-radius: 4px;">
+                            <strong>${usage.application}</strong> - ${usage.content}<br>
+                            <small>カテゴリ: ${usage.category} | 使用時間: ${usage.totalDuration}分 | セッション数: ${usage.sessionCount}</small>
+                        </div>
+                    `;
                 });
-                dailyList.appendChild(dateDiv);
-            });
+                dailyList.appendChild(usageDiv);
+            }
+            
+            // スクリーンショットベースのデータも表示（後方互換性）
+            if (data.dailyStats && Object.keys(data.dailyStats).length > 0) {
+                const screenshotDiv = document.createElement('div');
+                screenshotDiv.innerHTML = '<h4 style="margin-top: 20px;">日別画面時間 (スクリーンショット間隔ベース)</h4>';
+                Object.entries(data.dailyStats).forEach(([date, screens]) => {
+                    const dateDiv = document.createElement('div');
+                    dateDiv.innerHTML = `<h5>${date}</h5>`;
+                    Object.entries(screens).forEach(([screen, minutes]) => {
+                        dateDiv.innerHTML += `<p style="margin-left: 20px;">${screen}: ${Math.round(minutes)} 分</p>`;
+                    });
+                    screenshotDiv.appendChild(dateDiv);
+                });
+                dailyList.appendChild(screenshotDiv);
+            }
+            
+            // データがない場合
+            if (dailyList.innerHTML === '') {
+                dailyList.innerHTML = '<p style="color: #666; font-style: italic;">使用時間データがありません。アプリケーションを使用しているとデータが集まります。</p>';
+            }
         });
+        
+        function getCategoryColor(category) {
+            const colors = {
+                'Browser': '#e3f2fd',
+                'Development': '#f3e5f5',
+                'Application': '#e8f5e8',
+                'Game': '#fff3e0',
+                'default': '#f5f5f5'
+            };
+            return colors[category] || colors.default;
+        }
+        
+        function getCategoryClass(category) {
+            const classes = {
+                'Browser': 'category-browser',
+                'Development': 'category-development',
+                'Application': 'category-application',
+                'Game': 'category-game',
+                'default': 'category-default'
+            };
+            return classes[category] || classes.default;
+        }
+
+        // 日付選択機能
+        async function loadSelectedDate() {
+            const dateInput = document.getElementById('dateSelect');
+            const quickSelect = document.getElementById('quickDateSelect');
+            
+            let selectedDate;
+            
+            if (quickSelect.value) {
+                const today = new Date();
+                switch (quickSelect.value) {
+                    case 'today':
+                        selectedDate = today;
+                        break;
+                    case 'yesterday':
+                        selectedDate = new Date(today);
+                        selectedDate.setDate(selectedDate.getDate() - 1);
+                        break;
+                    case 'week':
+                        // 過去7日間は別の処理が必要
+                        alert('過去7日間表示は今後実装予定です');
+                        return;
+                }
+                dateInput.value = selectedDate.toISOString().split('T')[0];
+            } else if (dateInput.value) {
+                selectedDate = new Date(dateInput.value);
+            } else {
+                alert('日付を選択してください');
+                return;
+            }
+            
+            currentDate = selectedDate.toISOString().split('T')[0];
+            await loadDateSessions(currentDate);
+        }
+        
+        async function loadDateSessions(dateStr) {
+            try {
+                const [sessions, dailyUsage, summary] = await Promise.all([
+                    ipcRenderer.invoke('get-date-sessions', dateStr),
+                    ipcRenderer.invoke('get-daily-usage', dateStr),
+                    ipcRenderer.invoke('get-date-summary', dateStr)
+                ]);
+                
+                allSessions = sessions;
+                displayDateSummary(summary, dailyUsage);
+                showOverview();
+                
+            } catch (error) {
+                console.error('データ取得エラー:', error);
+                document.getElementById('selectedDateSummary').innerHTML = 
+                    '<p style="color: red;">データの取得に失敗しました</p>';
+            }
+        }
+        
+        function displayDateSummary(summary, dailyUsage) {
+            const summaryContainer = document.getElementById('selectedDateSummary');
+            
+            if (!summary || summary.sessionCount === 0) {
+                summaryContainer.innerHTML = '<p style="color: #666;">選択した日付にデータがありません</p>';
+                document.getElementById('sessionsDetailContainer').style.display = 'none';
+                return;
+            }
+            
+            summaryContainer.innerHTML = `
+                <div class="summary-stats">
+                    <div class="summary-item">
+                        <div class="summary-number">${summary.sessionCount}</div>
+                        <div class="summary-label">セッション数</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="summary-number">${summary.totalDuration}分</div>
+                        <div class="summary-label">総使用時間</div>
+                    </div>
+                    <div class="summary-item">
+                        <div class="summary-number">${summary.applicationCount}</div>
+                        <div class="summary-label">アプリ数</div>
+                    </div>
+                </div>
+                
+                <h4>使用時間の多いアプリケーション</h4>
+                <div>
+                    ${dailyUsage.map(usage => `
+                        <div style="margin: 8px 0; padding: 12px; background-color: ${getCategoryColor(usage.category)}; border-radius: 6px; cursor: pointer;" 
+                             onclick="showApplicationSessions('${usage.application}')">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <strong class="app-clickable">${usage.application}</strong> - ${usage.content}
+                                    <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                                        <span class="category-tag ${getCategoryClass(usage.category)}">${usage.category}</span>
+                                    </div>
+                                </div>
+                                <div style="text-align: right;">
+                                    <div style="font-weight: bold; color: #4CAF50;">${usage.totalDuration}分</div>
+                                    <div style="font-size: 12px; color: #666;">${usage.sessionCount}セッション</div>
+                                </div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+            
+            document.getElementById('sessionsDetailContainer').style.display = 'block';
+            setupFilters();
+        }
+        
+        function setupFilters() {
+            const categories = [...new Set(allSessions.map(s => s.category))];
+            const applications = [...new Set(allSessions.map(s => s.application))];
+            
+            const filterContainer = document.getElementById('filterButtons');
+            filterContainer.innerHTML = `
+                <button class="filter-btn active" onclick="filterSessions('all')">すべて</button>
+                ${categories.map(cat => 
+                    `<button class="filter-btn" onclick="filterSessions('category', '${cat}')">${cat}</button>`
+                ).join('')}
+            `;
+        }
+        
+        function filterSessions(type, value) {
+            // フィルターボタンのアクティブ状態を更新
+            document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            let filteredSessions = allSessions;
+            
+            if (type === 'category') {
+                filteredSessions = allSessions.filter(s => s.category === value);
+            }
+            
+            displaySessionsTable(filteredSessions);
+        }
+        
+        function displaySessionsTable(sessions) {
+            const tbody = document.getElementById('sessionsTableBody');
+            
+            if (sessions.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #666;">データがありません</td></tr>';
+                return;
+            }
+            
+            tbody.innerHTML = sessions.map(session => `
+                <tr>
+                    <td class="session-time">
+                        ${formatTimeShort(new Date(session.startTime))} - ${formatTimeShort(new Date(session.endTime))}
+                    </td>
+                    <td>
+                        <span class="app-clickable" onclick="showApplicationSessions('${session.application}')">
+                            ${session.application}
+                        </span>
+                    </td>
+                    <td>${session.content}</td>
+                    <td>
+                        <span class="category-tag ${getCategoryClass(session.category)}">${session.category}</span>
+                    </td>
+                    <td>
+                        <span class="duration-badge">${formatDuration(session.duration)}</span>
+                    </td>
+                    <td class="window-title" title="${session.windowTitle}">${session.windowTitle}</td>
+                </tr>
+            `).join('');
+        }
+        
+        async function showApplicationSessions(application) {
+            try {
+                const appSessions = await ipcRenderer.invoke('get-application-sessions', currentDate, application);
+                currentApplication = application;
+                currentView = 'application';
+                
+                displaySessionsTable(appSessions);
+                document.getElementById('backToOverview').style.display = 'block';
+                
+                // フィルターを非表示
+                document.querySelector('.filter-section').style.display = 'none';
+                
+            } catch (error) {
+                console.error('アプリケーション別セッション取得エラー:', error);
+            }
+        }
+        
+        function showOverview() {
+            currentView = 'overview';
+            currentApplication = null;
+            
+            displaySessionsTable(allSessions);
+            document.getElementById('backToOverview').style.display = 'none';
+            document.querySelector('.filter-section').style.display = 'block';
+            
+            // フィルターをリセット
+            setupFilters();
+        }
+
+        // 初期化
+        async function initializePage() {
+            try {
+                const availableDates = await ipcRenderer.invoke('get-available-dates');
+                const quickSelect = document.getElementById('quickDateSelect');
+                
+                // 利用可能な日付をクイック選択に追加
+                if (availableDates.length > 0) {
+                    availableDates.slice(0, 10).forEach(date => {
+                        const option = document.createElement('option');
+                        option.value = date;
+                        option.textContent = new Date(date).toLocaleDateString('ja-JP');
+                        quickSelect.appendChild(option);
+                    });
+                }
+                
+                // 今日の日付をデフォルトに設定
+                const today = new Date().toISOString().split('T')[0];
+                document.getElementById('dateSelect').value = today;
+                
+            } catch (error) {
+                console.error('初期化エラー:', error);
+            }
+            
+            refreshStats();
+        }
 
         // 初期データをリクエスト
         window.addEventListener('DOMContentLoaded', () => {
-            refreshStats();
+            initializePage();
         });
     </script>
 </body>

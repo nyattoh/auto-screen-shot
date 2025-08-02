@@ -48,12 +48,39 @@ export interface IUsageDatabase {
     saveSitePattern(pattern: SitePattern): Promise<void>;
     getSitePatterns(): Promise<SitePattern[]>;
     close(): Promise<void>;
+    // 新しい機能追加
+    getDetailedSessions(date: Date): Promise<DetailedSession[]>;
+    getApplicationSessions(date: Date, application: string): Promise<DetailedSession[]>;
+    getDateRangeSessions(startDate: Date, endDate: Date): Promise<DetailedSession[]>;
+    getAvailableDates(): Promise<string[]>;
+    getDateUsageSummary(date: Date): Promise<DateUsageSummary>;
 }
 
 export interface HourlySessionData {
     hour: number;
     totalDuration: number; // minutes
     sessionCount: number;
+}
+
+export interface DetailedSession {
+    id: number;
+    windowTitle: string;
+    processName: string;
+    application: string;
+    content: string;
+    category: string;
+    startTime: Date;
+    endTime: Date;
+    duration: number; // milliseconds
+    date: string;
+}
+
+export interface DateUsageSummary {
+    date: string;
+    totalDuration: number; // minutes
+    sessionCount: number;
+    applicationCount: number;
+    topApplications: { application: string; duration: number; }[];
 }
 
 export class UsageDatabase implements IUsageDatabase {
@@ -462,5 +489,227 @@ export class UsageDatabase implements IUsageDatabase {
             return `"${field.replace(/"/g, '""')}"`;
         }
         return field;
+    }
+
+    async getDetailedSessions(date: Date): Promise<DetailedSession[]> {
+        if (!this.db) {
+            throw new Error('Database not initialized');
+        }
+
+        const dateStr = this.formatDate(date);
+
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT 
+                    id,
+                    window_title,
+                    process_name,
+                    application,
+                    content,
+                    category,
+                    start_time,
+                    end_time,
+                    duration,
+                    date
+                FROM usage_sessions 
+                WHERE date = ?
+                ORDER BY start_time ASC
+            `;
+
+            this.db!.all(sql, [dateStr], (err, rows: any[]) => {
+                if (err) {
+                    reject(new Error(`Failed to get detailed sessions: ${err.message}`));
+                } else {
+                    const sessions: DetailedSession[] = rows.map(row => ({
+                        id: row.id,
+                        windowTitle: row.window_title,
+                        processName: row.process_name,
+                        application: row.application,
+                        content: row.content,
+                        category: row.category,
+                        startTime: new Date(row.start_time),
+                        endTime: new Date(row.end_time),
+                        duration: row.duration,
+                        date: row.date
+                    }));
+                    resolve(sessions);
+                }
+            });
+        });
+    }
+
+    async getApplicationSessions(date: Date, application: string): Promise<DetailedSession[]> {
+        if (!this.db) {
+            throw new Error('Database not initialized');
+        }
+
+        const dateStr = this.formatDate(date);
+
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT 
+                    id,
+                    window_title,
+                    process_name,
+                    application,
+                    content,
+                    category,
+                    start_time,
+                    end_time,
+                    duration,
+                    date
+                FROM usage_sessions 
+                WHERE date = ? AND application = ?
+                ORDER BY start_time ASC
+            `;
+
+            this.db!.all(sql, [dateStr, application], (err, rows: any[]) => {
+                if (err) {
+                    reject(new Error(`Failed to get application sessions: ${err.message}`));
+                } else {
+                    const sessions: DetailedSession[] = rows.map(row => ({
+                        id: row.id,
+                        windowTitle: row.window_title,
+                        processName: row.process_name,
+                        application: row.application,
+                        content: row.content,
+                        category: row.category,
+                        startTime: new Date(row.start_time),
+                        endTime: new Date(row.end_time),
+                        duration: row.duration,
+                        date: row.date
+                    }));
+                    resolve(sessions);
+                }
+            });
+        });
+    }
+
+    async getDateRangeSessions(startDate: Date, endDate: Date): Promise<DetailedSession[]> {
+        if (!this.db) {
+            throw new Error('Database not initialized');
+        }
+
+        const startDateStr = this.formatDate(startDate);
+        const endDateStr = this.formatDate(endDate);
+
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT 
+                    id,
+                    window_title,
+                    process_name,
+                    application,
+                    content,
+                    category,
+                    start_time,
+                    end_time,
+                    duration,
+                    date
+                FROM usage_sessions 
+                WHERE date BETWEEN ? AND ?
+                ORDER BY date DESC, start_time ASC
+            `;
+
+            this.db!.all(sql, [startDateStr, endDateStr], (err, rows: any[]) => {
+                if (err) {
+                    reject(new Error(`Failed to get date range sessions: ${err.message}`));
+                } else {
+                    const sessions: DetailedSession[] = rows.map(row => ({
+                        id: row.id,
+                        windowTitle: row.window_title,
+                        processName: row.process_name,
+                        application: row.application,
+                        content: row.content,
+                        category: row.category,
+                        startTime: new Date(row.start_time),
+                        endTime: new Date(row.end_time),
+                        duration: row.duration,
+                        date: row.date
+                    }));
+                    resolve(sessions);
+                }
+            });
+        });
+    }
+
+    async getAvailableDates(): Promise<string[]> {
+        if (!this.db) {
+            throw new Error('Database not initialized');
+        }
+
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT DISTINCT date 
+                FROM usage_sessions 
+                ORDER BY date DESC
+            `;
+
+            this.db!.all(sql, (err, rows: any[]) => {
+                if (err) {
+                    reject(new Error(`Failed to get available dates: ${err.message}`));
+                } else {
+                    const dates = rows.map(row => row.date);
+                    resolve(dates);
+                }
+            });
+        });
+    }
+
+    async getDateUsageSummary(date: Date): Promise<DateUsageSummary> {
+        if (!this.db) {
+            throw new Error('Database not initialized');
+        }
+
+        const dateStr = this.formatDate(date);
+
+        return new Promise((resolve, reject) => {
+            const sql = `
+                SELECT 
+                    COUNT(*) as session_count,
+                    SUM(duration) as total_duration_ms,
+                    COUNT(DISTINCT application) as application_count
+                FROM usage_sessions 
+                WHERE date = ?
+            `;
+
+            const topAppsSql = `
+                SELECT 
+                    application,
+                    SUM(duration) as duration_ms
+                FROM usage_sessions 
+                WHERE date = ?
+                GROUP BY application
+                ORDER BY duration_ms DESC
+                LIMIT 5
+            `;
+
+            this.db!.get(sql, [dateStr], (err, summaryRow: any) => {
+                if (err) {
+                    reject(new Error(`Failed to get date summary: ${err.message}`));
+                    return;
+                }
+
+                this.db!.all(topAppsSql, [dateStr], (err, topAppsRows: any[]) => {
+                    if (err) {
+                        reject(new Error(`Failed to get top applications: ${err.message}`));
+                        return;
+                    }
+
+                    const summary: DateUsageSummary = {
+                        date: dateStr,
+                        totalDuration: summaryRow ? Math.round(summaryRow.total_duration_ms / 60000) : 0,
+                        sessionCount: summaryRow ? summaryRow.session_count : 0,
+                        applicationCount: summaryRow ? summaryRow.application_count : 0,
+                        topApplications: topAppsRows.map(row => ({
+                            application: row.application,
+                            duration: Math.round(row.duration_ms / 60000)
+                        }))
+                    };
+
+                    resolve(summary);
+                });
+            });
+        });
     }
 }

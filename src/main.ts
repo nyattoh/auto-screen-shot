@@ -36,6 +36,8 @@ import { BackgroundServiceManager } from './service/BackgroundServiceManager';
 import { ShutdownManager } from './service/ShutdownManager';
 import { ProcessManager } from './service/ProcessManager';
 import { WindowsIntegration } from './service/WindowsIntegration';
+import { UsageDatabase } from './usage/UsageDatabase';
+import { TimeTracker } from './usage/TimeTracker';
 
 // グローバルエラーハンドラ
 process.on('uncaughtException', (error) => {
@@ -68,6 +70,8 @@ class AutoScreenCaptureApp {
     private statisticsWindow: StatisticsWindow;
     private backgroundServiceManager: BackgroundServiceManager;
     private shutdownManager: ShutdownManager;
+    private usageDatabase: UsageDatabase;
+    private timeTracker: TimeTracker;
 
     constructor() {
         try {
@@ -76,11 +80,15 @@ class AutoScreenCaptureApp {
             // バックグラウンドサービス管理を最初に初期化
             this.backgroundServiceManager = new BackgroundServiceManager();
             
+            // 使用時間管理コンポーネントを初期化
+            this.usageDatabase = new UsageDatabase();
+            this.timeTracker = new TimeTracker();
+            
             // 既存のコンポーネントを初期化
             this.screenshotManager = new ScreenshotManager();
             this.settings = new Settings();
             this.autoStartManager = new AutoStartManager();
-            this.statisticsWindow = new StatisticsWindow(this.screenshotManager, this.settings);
+            this.statisticsWindow = new StatisticsWindow(this.screenshotManager, this.settings, this.usageDatabase);
             
             // シャットダウン管理を初期化
             this.initializeShutdownManager();
@@ -109,6 +117,14 @@ class AutoScreenCaptureApp {
             this.shutdownManager.addShutdownCallback(async () => {
                 logger.info('アプリケーション固有のシャットダウン処理を実行します');
                 this.screenshotManager.stopCapture();
+                
+                // 使用時間データベースを閉じる
+                try {
+                    await this.usageDatabase.close();
+                    logger.info('使用時間データベースを閉じました');
+                } catch (error) {
+                    logger.error('使用時間データベースの閉じる処理でエラー', error);
+                }
                 
                 // トレイアイコンを削除
                 if (this.tray) {
