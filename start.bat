@@ -16,8 +16,15 @@ if %errorlevel% neq 0 (
 echo バックグラウンドモードでアプリケーションを起動中...
 start "" /B npx electron dist/main.js --background
 
+echo 起動コマンドを実行しました...
+timeout /t 3 /nobreak >nul
+
+echo Electronプロセスの起動を確認中...
+tasklist | findstr electron.exe >nul
 if %errorlevel% neq 0 (
-    echo アプリケーション起動エラーが発生しました
+    echo 警告: Electronプロセスが見つかりません
+    echo アプリケーションの起動に失敗した可能性があります
+    echo ログファイルを確認してください: C:\Users\%USERNAME%\AppData\Roaming\Electron\logs\app.log
     pause
     exit /b 1
 )

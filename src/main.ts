@@ -39,26 +39,51 @@ import { WindowsIntegration } from './service/WindowsIntegration';
 import { UsageDatabase } from './usage/UsageDatabase';
 import { TimeTracker } from './usage/TimeTracker';
 
+// エラーダイアログの重複表示を防ぐフラグ
+let errorDialogShown = false;
+
 // グローバルエラーハンドラ
 process.on('uncaughtException', (error) => {
     console.error('未処理の例外:', error);
-    logger.error('未処理の例外', error);
     
     // エラーログファイルに書き込み
     const errorLogPath = path.join(__dirname, '../error.log');
-    fs.appendFileSync(errorLogPath, `${new Date().toISOString()} - Uncaught Exception: ${error.stack}\n\n`);
+    try {
+        fs.appendFileSync(errorLogPath, `${new Date().toISOString()} - Uncaught Exception: ${error.stack}\n\n`);
+    } catch (logError) {
+        console.error('ログ書き込みエラー:', logError);
+    }
     
-    dialog.showErrorBox('起動エラー', `アプリケーションの起動中にエラーが発生しました:\n\n${error.message}\n\n詳細はerror.logを確認してください。`);
-    app.quit();
+    // エラーダイアログの重複表示を防ぐ
+    if (!errorDialogShown && dialog && typeof dialog.showErrorBox === 'function') {
+        errorDialogShown = true;
+        try {
+            dialog.showErrorBox('アプリケーションエラー', `予期しないエラーが発生しました:\n\n${error.message}\n\nアプリケーションを終了します。`);
+        } catch (dialogError) {
+            console.error('エラーダイアログ表示失敗:', dialogError);
+        }
+    }
+    
+    // アプリケーションを適切に終了
+    setTimeout(() => {
+        if (app && typeof app.quit === 'function') {
+            app.quit();
+        } else {
+            process.exit(1);
+        }
+    }, 1000);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('未処理のPromise拒否:', reason);
-    logger.error('未処理のPromise拒否', { reason, promise });
     
     // エラーログファイルに書き込み
     const errorLogPath = path.join(__dirname, '../error.log');
-    fs.appendFileSync(errorLogPath, `${new Date().toISOString()} - Unhandled Rejection: ${reason}\n\n`);
+    try {
+        fs.appendFileSync(errorLogPath, `${new Date().toISOString()} - Unhandled Rejection: ${reason}\n\n`);
+    } catch (logError) {
+        console.error('ログ書き込みエラー:', logError);
+    }
 });
 
 class AutoScreenCaptureApp {
@@ -327,14 +352,31 @@ class AutoScreenCaptureApp {
     private quitApp(): void {
         logger.info('アプリケーション終了開始');
         
-        // ShutdownManagerを使用して適切にシャットダウン
-        if (this.shutdownManager) {
-            this.shutdownManager.manualShutdown();
-        } else {
-            // フォールバック処理
-            this.screenshotManager.stopCapture();
-            logger.info('アプリケーション終了完了');
-            app.quit();
+        try {
+            // エラーダイアログの重複表示を防ぐフラグをリセット
+            errorDialogShown = true;
+            
+            // ShutdownManagerを使用して適切にシャットダウン
+            if (this.shutdownManager) {
+                this.shutdownManager.manualShutdown();
+            } else {
+                // フォールバック処理
+                this.screenshotManager.stopCapture();
+                
+                // データベースを閉じる
+                if (this.usageDatabase) {
+                    this.usageDatabase.close().catch(error => {
+                        logger.error('データベース終了エラー:', error);
+                    });
+                }
+                
+                logger.info('アプリケーション終了完了');
+                app.quit();
+            }
+        } catch (error) {
+            logger.error('アプリケーション終了時エラー:', error);
+            // 強制終了
+            process.exit(0);
         }
     }
 
