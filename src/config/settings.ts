@@ -1,0 +1,80 @@
+import * as fs from 'fs-extra';
+import * as path from 'path';
+import { app } from 'electron';
+
+export class Settings {
+    private saveDirectory: string;
+    private captureInterval: number;
+    private autoStart: boolean;
+    private configPath: string;
+
+    constructor() {
+        this.configPath = path.join(app.getPath('userData'), 'config.json');
+        this.loadSettings();
+    }
+
+    private loadSettings(): void {
+        try {
+            if (fs.existsSync(this.configPath)) {
+                const config = fs.readJsonSync(this.configPath);
+                this.saveDirectory = config.saveDirectory || path.join(app.getPath('documents'), 'Screenshots');
+                this.captureInterval = config.captureInterval || 180000; // 3分
+                this.autoStart = config.autoStart || true;
+            } else {
+                this.setDefaultSettings();
+            }
+        } catch (error) {
+            this.setDefaultSettings();
+        }
+    }
+
+    private setDefaultSettings(): void {
+        this.saveDirectory = path.join(app.getPath('documents'), 'Screenshots');
+        this.captureInterval = 180000; // 3分
+        this.autoStart = true;
+        this.saveSettings();
+    }
+
+    public saveSettings(): void {
+        const config = {
+            saveDirectory: this.saveDirectory,
+            captureInterval: this.captureInterval,
+            autoStart: this.autoStart
+        };
+        fs.ensureDirSync(path.dirname(this.configPath));
+        fs.writeJsonSync(this.configPath, config, { spaces: 2 });
+    }
+
+    public setSaveDirectory(directory: string): void {
+        this.saveDirectory = directory;
+        this.saveSettings();
+    }
+
+    public getSaveDirectory(): string {
+        return this.saveDirectory;
+    }
+
+    public setCaptureInterval(interval: number): void {
+        this.captureInterval = interval;
+        this.saveSettings();
+    }
+
+    public getCaptureInterval(): number {
+        return this.captureInterval;
+    }
+
+    public getScreenshotInterval(): number {
+        return this.captureInterval;
+    }
+
+    public setAutoStart(autoStart: boolean): void {
+        this.autoStart = autoStart;
+        this.saveSettings();
+    }
+
+    public getAutoStart(): boolean {
+        return this.autoStart;
+    }
+}
+
+export default Settings;

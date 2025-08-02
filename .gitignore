@@ -1,0 +1,64 @@
+# Dependencies
+node_modules/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+dist/
+build/
+out/
+*.js
+*.js.map
+*.d.ts
+!jest.config.js
+!src/**/*.d.ts
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Application specific
+logs/
+screenshots/
+*.db
+*.sqlite
+*.sqlite3
+error.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# OS files
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# Testing
+coverage/
+.nyc_output/
+*.lcov
+
+# Electron specific
+electron-builder.yml
+dist_electron/
+.electron-vue
+
+# Claude specific
+.claude/
+CLAUDE.md
+
+# Application data
+appdata/
+userdata/

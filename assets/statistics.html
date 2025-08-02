@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>スクリーンショット統計</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+            color: #333;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background-color: #4CAF50;
+            color: white;
+            padding: 20px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            padding: 20px;
+        }
+        .stat-card {
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            padding: 20px;
+            text-align: center;
+            border-left: 4px solid #4CAF50;
+        }
+        .stat-number {
+            font-size: 32px;
+            font-weight: bold;
+            color: #4CAF50;
+            margin-bottom: 8px;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        .history-section {
+            padding: 20px;
+        }
+        .history-title {
+            font-size: 18px;
+            margin-bottom: 15px;
+            color: #333;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+        .history-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .history-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+            transition: background-color 0.2s;
+        }
+        .history-item:hover {
+            background-color: #f8f9fa;
+        }
+        .history-item:last-child {
+            border-bottom: none;
+        }
+        .file-name {
+            font-weight: 500;
+            color: #333;
+        }
+        .timestamp {
+            font-size: 12px;
+            color: #666;
+        }
+        .buttons {
+            padding: 20px;
+            text-align: center;
+            background-color: #f8f9fa;
+        }
+        .btn {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 0 5px;
+            font-size: 14px;
+            transition: background-color 0.2s;
+        }
+        .btn:hover {
+            background-color: #45a049;
+        }
+        .btn-secondary {
+            background-color: #6c757d;
+        }
+        .btn-secondary:hover {
+            background-color: #5a6268;
+        }
+        .no-data {
+            text-align: center;
+            color: #666;
+            padding: 40px;
+            font-style: italic;
+        }
+        .daily-stats {
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            margin-top: 20px;
+        }
+        .daily-stats h3 {
+            margin-top: 0;
+            margin-bottom: 15px;
+            color: #333;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+        .daily-stats p {
+            margin: 5px 0;
+            color: #555;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 スクリーンショット統計</h1>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-number" id="totalCount">0</div>
+                <div class="stat-label">総撮影数</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="todayCount">0</div>
+                <div class="stat-label">今日の撮影数</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="status">停止中</div>
+                <div class="stat-label">現在の状態</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="lastCapture">-</div>
+                <div class="stat-label">最新撮影時刻</div>
+            </div>
+        </div>
+
+        <div class="daily-stats">
+            <h3>日別画面時間</h3>
+            <div id="dailyTimeList"></div>
+        </div>
+
+        <div class="history-section">
+            <div class="history-title">📋 撮影履歴</div>
+            <div class="history-list" id="historyList">
+                <div class="no-data">まだスクリーンショットが撮影されていません</div>
+            </div>
+        </div>
+
+        <div class="buttons">
+            <button class="btn" onclick="refreshStats()">🔄 更新</button>
+            <button class="btn btn-secondary" onclick="openSaveFolder()">📁 保存フォルダを開く</button>
+            <button class="btn btn-secondary" onclick="closeWindow()">❌ 閉じる</button>
+        </div>
+    </div>
+
+    <script>
+        const { ipcRenderer } = require('electron');
+
+        function refreshStats() {
+            ipcRenderer.send('request-statistics');
+        }
+
+        function openSaveFolder() {
+            ipcRenderer.send('open-save-folder');
+        }
+
+        function closeWindow() {
+            window.close();
+        }
+
+        function formatTime(date) {
+            return date.toLocaleString('ja-JP', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+
+        function updateStatistics(data) {
+            document.getElementById('totalCount').textContent = data.totalCount;
+            document.getElementById('todayCount').textContent = data.todayCount;
+            document.getElementById('status').textContent = data.isCapturing ? '実行中' : '停止中';
+            
+            const lastCaptureElement = document.getElementById('lastCapture');
+            if (data.lastCapture) {
+                lastCaptureElement.textContent = formatTime(new Date(data.lastCapture));
+            } else {
+                lastCaptureElement.textContent = '-';
+            }
+
+            const historyList = document.getElementById('historyList');
+            
+            if (data.history && data.history.length > 0) {
+                historyList.innerHTML = data.history.map(item => {
+                    const fileName = item.filePath.split('\\').pop() || item.filePath.split('/').pop();
+                    return `
+                        <div class="history-item">
+                            <div class="file-name">${fileName}</div>
+                            <div class="timestamp">${formatTime(new Date(item.timestamp))}</div>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                historyList.innerHTML = '<div class="no-data">まだスクリーンショットが撮影されていません</div>';
+            }
+        }
+
+        // 統計データを受信
+        ipcRenderer.on('statistics-data', (event, data) => {
+            updateStatistics(data);
+
+            // 日別画面時間表示
+            const dailyList = document.getElementById('dailyTimeList');
+            dailyList.innerHTML = '';
+            Object.entries(data.dailyStats).forEach(([date, screens]) => {
+                const dateDiv = document.createElement('div');
+                dateDiv.innerHTML = `<h4>${date}</h4>`;
+                Object.entries(screens).forEach(([screen, minutes]) => {
+                    dateDiv.innerHTML += `<p>${screen}: ${Math.round(minutes)} 分</p>`;
+                });
+                dailyList.appendChild(dateDiv);
+            });
+        });
+
+        // 初期データをリクエスト
+        window.addEventListener('DOMContentLoaded', () => {
+            refreshStats();
+        });
+    </script>
+</body>
+</html>
