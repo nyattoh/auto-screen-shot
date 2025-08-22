@@ -33,6 +33,19 @@ Windowsで定期的にスクリーンショットを自動撮影し、アプリ�
 - **プロセス管理**: 重複起動防止と自動再起動機能
 - **詳細ログ記録**: デバッグとトラブルシューティング用ログ
 
+## 🧩 前提条件
+
+- Windows 10/11
+- Node.js 16以上
+- Electron 28以上（`npm install` 時に自動インストールされます）
+
+## 📦 インストール
+
+```bash
+# 依存関係のインストール（このディレクトリで実行）
+npm install
+```
+
 ## 🛠️ 起動方法
 
 ### 方法1: バッチファイルを使用（推奨）
@@ -88,6 +101,16 @@ npx electron dist/main.js --foreground
 3. 保存フォルダと撮影間隔を設定
 4. 「スクリーンショット開始/停止」で撮影を開始/停止
 
+### トレイメニュー
+- **スクリーンショット開始/停止**: 定期撮影のオン/オフ
+- **設定**: 保存フォルダや撮影間隔などを変更
+- **統計を表示**: 日別・アプリ別の使用統計ウィンドウを開く
+- **画像最適化**: スクリーンショットをWebPに変換して容量削減
+- **データメンテナンス**: 保持期間を超えた古い統計データを削除
+- **ログを表示**: ログファイル（`app.log`）を開く
+- **終了**: アプリケーションを安全に終了
+- **サービス情報**: 現在の起動モードや稼働時間などを表示
+
 ### 統計画面の利用
 1. システムトレイから「統計を表示」を選択
 2. 日別の使用時間統計を確認
@@ -105,6 +128,27 @@ npx electron dist/main.js --foreground
 - **最小セッション時間**: 1分未満の使用は統計から除外
 - **アイドル検出時間**: 5分間の無操作でアイドル状態と判定
 - **データベース保存**: SQLiteによる永続的なデータ保存
+
+### デフォルト設定（初回起動時に自動生成）
+
+```json
+{
+  "saveDirectory": "%USERPROFILE%\\Documents\\Screenshots",
+  "captureInterval": 180000,
+  "autoStart": true,
+  "statisticsConfig": {
+    "dataRetentionDays": 90,
+    "cleanupIntervalHours": 24,
+    "enableImageOptimization": true,
+    "webpQuality": 80
+  }
+}
+```
+
+### データ保存場所
+- **スクリーンショット**: 上記の保存フォルダ（既定: `ドキュメント\\Screenshots`）
+- **使用時間データベース**: `%APPDATA%\\win-screenshot-app\\usage-statistics.db`
+- **ログファイル**: `%APPDATA%\\Electron\\logs\\app.log`（トレイの「ログを表示」から開けます）
 
 ## 🔄 起動モード
 
@@ -124,6 +168,15 @@ npx electron dist/main.js --foreground
 - 親プロセスとの接続を維持
 - ウィンドウを閉じるとアプリケーションも終了
 
+## 💻 コマンドラインオプション
+
+| オプション | 短縮形 | 説明 |
+|-----------|--------|------|
+| `--background` | `-b` | バックグラウンドモードで起動 |
+| `--dev` | `-d` | 開発モードで起動 |
+| `--foreground` | `-f` | フォアグラウンドモードで起動 |
+| `--help` | `-h` | ヘルプメッセージを表示 |
+
 ## 📊 データ分析機能
 
 ### 日別統計
@@ -142,6 +195,19 @@ npx electron dist/main.js --foreground
 - 自動データベース初期化
 - データ整合性の保証
 - 効率的なクエリ処理
+
+## 🧪 テスト
+
+```bash
+# 全テスト
+npm test
+
+# 統計マネージャーのみ
+npm test -- --testPathPattern="StatisticsManager"
+
+# 画像最適化のみ
+npm test -- --testPathPattern="ImageOptimizer"
+```
 
 ## 🚧 今後の機能追加予定
 
@@ -180,4 +246,7 @@ npx electron dist/main.js --foreground
 - 使用時間データはSQLiteデータベースに暗号化されずに保存されます
 - アプリケーション終了時に適切なデータクリーンアップが実行されます
 
-詳細なサービス機能については `README-service.md` を参照してください。
+## 📎 関連ドキュメント
+
+- バックグラウンドサービスや起動モードの詳細: `README-service.md`
+- 統計機能・画像最適化の技術詳細: `STATISTICS_FEATURES.md`
