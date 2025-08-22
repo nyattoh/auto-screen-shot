@@ -409,6 +409,34 @@
             </div>
         </div>
 
+        <!-- CSVエクスポートセクション -->
+        <div class="csv-export-section" style="padding: 20px; background-color: #f8f9fa; border-top: 2px solid #eee;">
+            <div class="history-title">📊 CSVエクスポート</div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 15px; align-items: center; margin: 15px 0;">
+                <div>
+                    <label for="exportStartDate">開始日:</label>
+                    <input type="date" id="exportStartDate" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;"/>
+                </div>
+                <div>
+                    <label for="exportEndDate">終了日:</label>
+                    <input type="date" id="exportEndDate" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px;"/>
+                </div>
+                <button class="btn" onclick="exportToCSV()" id="exportButton" style="padding: 10px 20px;">
+                    📋 CSVエクスポート
+                </button>
+            </div>
+            <div id="exportProgress" style="display: none; margin-top: 10px; padding: 10px; background-color: #e3f2fd; border-radius: 4px; text-align: center;">
+                <div style="margin-bottom: 5px;">データを処理中...</div>
+                <div style="width: 100%; background-color: #ddd; border-radius: 10px;">
+                    <div id="progressBar" style="width: 0%; height: 20px; background-color: #4CAF50; border-radius: 10px; transition: width 0.3s;"></div>
+                </div>
+            </div>
+            <div id="exportResult" style="margin-top: 10px; padding: 10px; border-radius: 4px; display: none;"></div>
+            <div style="margin-top: 10px; font-size: 12px; color: #666;">
+                💡 ヒント: エクスポートされるデータには、選択した期間内の全ての使用セッション、アプリケーション使用時間、カテゴリ情報が含まれます。
+            </div>
+        </div>
+
         <div class="buttons">
             <button class="btn" onclick="refreshStats()">🔄 更新</button>
             <button class="btn btn-secondary" onclick="openSaveFolder()">📁 保存フォルダを開く</button>
@@ -558,6 +586,11 @@
             return colors[category] || colors.default;
         }
         
+        // 指定したDateをローカルタイムゾーンのYYYY-MM-DD形式にフォーマット
+        function formatLocalDate(date) {
+            return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2,'0') + '-' + String(date.getDate()).padStart(2,'0');
+        }
+
         function getCategoryClass(category) {
             const classes = {
                 'Browser': 'category-browser',
@@ -591,7 +624,7 @@
                         alert('過去7日間表示は今後実装予定です');
                         return;
                 }
-                dateInput.value = selectedDate.toISOString().split('T')[0];
+                                dateInput.value = formatLocalDate(selectedDate);
             } else if (dateInput.value) {
                 selectedDate = new Date(dateInput.value);
             } else {
@@ -599,7 +632,7 @@
                 return;
             }
             
-            currentDate = selectedDate.toISOString().split('T')[0];
+                        currentDate = formatLocalDate(selectedDate);
             await loadDateSessions(currentDate);
         }
         
@@ -776,7 +809,7 @@
                 }
                 
                 // 今日の日付をデフォルトに設定
-                const today = new Date().toISOString().split('T')[0];
+                const today = formatLocalDate(new Date());
                 document.getElementById('dateSelect').value = today;
                 
             } catch (error) {
@@ -786,9 +819,118 @@
             refreshStats();
         }
 
+        // CSVエクスポート機能
+        async function exportToCSV() {
+            const startDateInput = document.getElementById('exportStartDate');
+            const endDateInput = document.getElementById('exportEndDate');
+            const exportButton = document.getElementById('exportButton');
+            const progressDiv = document.getElementById('exportProgress');
+            const progressBar = document.getElementById('progressBar');
+            const resultDiv = document.getElementById('exportResult');
+
+            // 入力値検証
+            if (!startDateInput.value || !endDateInput.value) {
+                showExportResult('エラー: 開始日と終了日を選択してください', 'error');
+                return;
+            }
+
+            const startDate = new Date(startDateInput.value);
+            const endDate = new Date(endDateInput.value);
+
+            if (startDate > endDate) {
+                showExportResult('エラー: 開始日は終了日より前の日付を選択してください', 'error');
+                return;
+            }
+
+            try {
+                // UI状態を更新
+                exportButton.disabled = true;
+                exportButton.textContent = '処理中...';
+                progressDiv.style.display = 'block';
+                resultDiv.style.display = 'none';
+
+                // プログレスバーを進行
+                updateProgress(25);
+
+                // CSVデータを取得
+                const csvResult = await ipcRenderer.invoke('export-csv', startDateInput.value, endDateInput.value);
+                updateProgress(75);
+
+                if (!csvResult.success) {
+                    throw new Error(csvResult.error || '不明なエラーが発生しました');
+                }
+
+                // ファイル保存ダイアログを表示
+                const fileName = `usage-statistics-${startDateInput.value}-to-${endDateInput.value}.csv`;
+                const saveResult = await ipcRenderer.invoke('save-csv-file', csvResult.data, fileName);
+                updateProgress(100);
+
+                if (saveResult.success) {
+                    if (saveResult.canceled) {
+                        showExportResult('エクスポートがキャンセルされました', 'info');
+                    } else {
+                        showExportResult(`CSVファイルが正常に保存されました: ${saveResult.filePath}`, 'success');
+                    }
+                } else {
+                    throw new Error(saveResult.error || 'ファイル保存に失敗しました');
+                }
+
+            } catch (error) {
+                console.error('CSVエクスポートエラー:', error);
+                showExportResult(`エラー: ${error.message}`, 'error');
+            } finally {
+                // UI状態をリセット
+                exportButton.disabled = false;
+                exportButton.textContent = '📋 CSVエクスポート';
+                setTimeout(() => {
+                    progressDiv.style.display = 'none';
+                    progressBar.style.width = '0%';
+                }, 2000);
+            }
+        }
+
+        function updateProgress(percentage) {
+            const progressBar = document.getElementById('progressBar');
+            progressBar.style.width = percentage + '%';
+        }
+
+        function showExportResult(message, type) {
+            const resultDiv = document.getElementById('exportResult');
+            resultDiv.style.display = 'block';
+            resultDiv.textContent = message;
+            
+            // スタイルを適用
+            resultDiv.className = '';
+            if (type === 'success') {
+                resultDiv.style.backgroundColor = '#d4edda';
+                resultDiv.style.borderColor = '#c3e6cb';
+                resultDiv.style.color = '#155724';
+            } else if (type === 'error') {
+                resultDiv.style.backgroundColor = '#f8d7da';
+                resultDiv.style.borderColor = '#f5c6cb';
+                resultDiv.style.color = '#721c24';
+            } else if (type === 'info') {
+                resultDiv.style.backgroundColor = '#d1ecf1';
+                resultDiv.style.borderColor = '#bee5eb';
+                resultDiv.style.color = '#0c5460';
+            }
+        }
+
+        // 初期化時にエクスポート日付を設定
+        function initializeExportDates() {
+            const today = formatLocalDate(new Date());
+            const oneWeekAgo = new Date();
+            oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+            const weekAgoStr = formatLocalDate(oneWeekAgo);
+
+            document.getElementById('exportStartDate').value = weekAgoStr;
+            document.getElementById('exportEndDate').value = today;
+        }
+
         // 初期データをリクエスト
         window.addEventListener('DOMContentLoaded', () => {
             initializePage();
+            initializeExportDates();
         });
     </script>
 </body>

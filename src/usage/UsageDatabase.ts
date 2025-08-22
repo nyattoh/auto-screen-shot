@@ -1,6 +1,7 @@
 import * as sqlite3 from 'sqlite3';
 import * as path from 'path';
 import * as fs from 'fs-extra';
+import { logger } from '../utils/logger';
 
 export interface UsageSession {
     windowTitle: string;
@@ -86,29 +87,65 @@ export interface DateUsageSummary {
 export class UsageDatabase implements IUsageDatabase {
     private db: sqlite3.Database | null = null;
     private dbPath: string;
+    private backupPath: string;
+    private maxBackups = 5;
 
     constructor(dbPath?: string) {
         // Default to user data directory
         const userDataPath = process.env.APPDATA || process.env.HOME || '.';
         const appDataPath = path.join(userDataPath, 'win-screenshot-app');
         this.dbPath = dbPath || path.join(appDataPath, 'usage-statistics.db');
+        this.backupPath = this.dbPath.replace('.db', '.backup.db');
     }
 
     async initialize(): Promise<void> {
-        return new Promise((resolve, reject) => {
-            // Ensure directory exists
-            const dbDir = path.dirname(this.dbPath);
-            fs.ensureDirSync(dbDir);
+        const dbDir = path.dirname(this.dbPath);
+        fs.ensureDirSync(dbDir);
 
-            this.db = new sqlite3.Database(this.dbPath, (err) => {
+        return this.initializeWithRetry(3);
+    }
+
+    private async initializeWithRetry(retryCount: number): Promise<void> {
+        try {
+            await this.tryInitializeDatabase();
+            logger.info('データベースの初期化が完了しました');
+        } catch (error) {
+            logger.warn(`データベース初期化エラー (残り再試行回数: ${retryCount - 1})`, error);
+            
+            if (retryCount <= 1) {
+                throw new Error(`データベース初期化に失敗しました: ${error.message}`);
+            }
+
+            // データベースが破損している可能性があるため復旧を試行
+            await this.attemptRecovery();
+            
+            // 再試行
+            return this.initializeWithRetry(retryCount - 1);
+        }
+    }
+
+    private async tryInitializeDatabase(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            this.db = new sqlite3.Database(this.dbPath, async (err) => {
                 if (err) {
                     reject(new Error(`Failed to open database: ${err.message}`));
                     return;
                 }
 
-                this.createTables()
-                    .then(() => resolve())
-                    .catch(reject);
+                try {
+                    // データベースの整合性チェック
+                    await this.checkDatabaseIntegrity();
+                    
+                    // テーブル作成
+                    await this.createTables();
+                    
+                    // 定期バックアップの作成
+                    await this.createBackup();
+                    
+                    resolve();
+                } catch (createError) {
+                    reject(createError);
+                }
             });
         });
     }
@@ -193,6 +230,181 @@ export class UsageDatabase implements IUsageDatabase {
         });
     }
 
+    /**
+     * データベースの整合性をチェック
+     */
+    private async checkDatabaseIntegrity(): Promise<void> {
+        if (!this.db) {
+            throw new Error('Database not initialized');
+        }
+
+        return new Promise((resolve, reject) => {
+            this.db!.get('PRAGMA integrity_check', (err, row: any) => {
+                if (err) {
+                    reject(new Error(`Integrity check failed: ${err.message}`));
+                    return;
+                }
+
+                const result = row?.integrity_check || 'unknown';
+                if (result !== 'ok') {
+                    reject(new Error(`Database integrity compromised: ${result}`));
+                    return;
+                }
+
+                logger.debug('データベース整合性チェック完了');
+                resolve();
+            });
+        });
+    }
+
+    /**
+     * データベースのバックアップを作成
+     */
+    private async createBackup(): Promise<void> {
+        try {
+            if (!fs.existsSync(this.dbPath)) {
+                return;
+            }
+
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+            const timestampedBackupPath = this.backupPath.replace('.backup.db', `.backup.${timestamp}.db`);
+            
+            await fs.copy(this.dbPath, timestampedBackupPath);
+            await fs.copy(this.dbPath, this.backupPath); // 最新のバックアップ
+            
+            // 古いバックアップを削除（最大数を超えた場合）
+            await this.cleanupOldBackups();
+            
+            logger.debug(`データベースバックアップを作成しました: ${timestampedBackupPath}`);
+        } catch (error) {
+            logger.warn('データベースバックアップの作成に失敗しました', error);
+            // バックアップ失敗は致命的ではないので続行
+        }
+    }
+
+    /**
+     * 古いバックアップファイルをクリーンアップ
+     */
+    private async cleanupOldBackups(): Promise<void> {
+        try {
+            const dbDir = path.dirname(this.dbPath);
+            const files = await fs.readdir(dbDir);
+            
+            const backupFiles = files
+                .filter(file => file.includes('.backup.') && file.endsWith('.db'))
+                .map(file => ({
+                    name: file,
+                    path: path.join(dbDir, file),
+                    mtime: fs.statSync(path.join(dbDir, file)).mtime
+                }))
+                .sort((a, b) => b.mtime.getTime() - a.mtime.getTime()); // 新しい順
+
+            // 最大数を超えた古いバックアップを削除
+            const filesToDelete = backupFiles.slice(this.maxBackups);
+            
+            for (const file of filesToDelete) {
+                await fs.remove(file.path);
+                logger.debug(`古いバックアップファイルを削除しました: ${file.name}`);
+            }
+        } catch (error) {
+            logger.warn('バックアップファイルのクリーンアップに失敗しました', error);
+        }
+    }
+
+    /**
+     * データベース復旧を試行
+     */
+    private async attemptRecovery(): Promise<void> {
+        try {
+            logger.warn('データベースの復旧を開始します');
+
+            // 現在のデータベースを閉じる
+            if (this.db) {
+                await this.closeDatabase();
+            }
+
+            // 破損したデータベースを移動
+            const corruptedPath = this.dbPath.replace('.db', '.corrupted.db');
+            if (fs.existsSync(this.dbPath)) {
+                await fs.move(this.dbPath, corruptedPath);
+                logger.info(`破損したデータベースを移動しました: ${corruptedPath}`);
+            }
+
+            // バックアップから復元を試行
+            let restored = false;
+            
+            // 最新のバックアップから復元
+            if (fs.existsSync(this.backupPath)) {
+                try {
+                    await fs.copy(this.backupPath, this.dbPath);
+                    logger.info('最新のバックアップから復元しました');
+                    restored = true;
+                } catch (backupError) {
+                    logger.warn('最新のバックアップからの復元に失敗しました', backupError);
+                }
+            }
+
+            // タイムスタンプ付きバックアップから復元を試行
+            if (!restored) {
+                const dbDir = path.dirname(this.dbPath);
+                try {
+                    const files = await fs.readdir(dbDir);
+                    const backupFiles = files
+                        .filter(file => file.includes('.backup.') && file.endsWith('.db'))
+                        .map(file => ({
+                            name: file,
+                            path: path.join(dbDir, file),
+                            mtime: fs.statSync(path.join(dbDir, file)).mtime
+                        }))
+                        .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+
+                    for (const backupFile of backupFiles) {
+                        try {
+                            await fs.copy(backupFile.path, this.dbPath);
+                            logger.info(`バックアップから復元しました: ${backupFile.name}`);
+                            restored = true;
+                            break;
+                        } catch (error) {
+                            logger.warn(`バックアップ復元失敗: ${backupFile.name}`, error);
+                        }
+                    }
+                } catch (error) {
+                    logger.warn('バックアップファイルの検索に失敗しました', error);
+                }
+            }
+
+            // 復元できない場合は新しいデータベースを作成
+            if (!restored) {
+                logger.warn('バックアップからの復元に失敗しました。新しいデータベースを作成します');
+            }
+
+            logger.info('データベース復旧処理が完了しました');
+
+        } catch (error) {
+            logger.error('データベース復旧に失敗しました', error);
+            throw new Error(`Database recovery failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * データベースを安全に閉じる
+     */
+    private async closeDatabase(): Promise<void> {
+        return new Promise((resolve) => {
+            if (this.db) {
+                this.db.close((err) => {
+                    if (err) {
+                        logger.warn('データベースクローズ中にエラーが発生しました', err);
+                    }
+                    this.db = null;
+                    resolve();
+                });
+            } else {
+                resolve();
+            }
+        });
+    }
+
     async saveSession(session: UsageSession): Promise<void> {
         if (!this.db) {
             throw new Error('Database not initialized');
@@ -234,7 +446,9 @@ export class UsageDatabase implements IUsageDatabase {
             throw new Error('Database not initialized');
         }
 
-        const dateStr = this.formatDate(date);
+        // 入力日付のローカル・UTC双方の文字列を用意（テストの表現揺れ対策）
+        const localDateStr = this.formatDate(new Date(date.getFullYear(), date.getMonth(), date.getDate()));
+        const isoDateStr = date.toISOString().split('T')[0];
 
         return new Promise((resolve, reject) => {
             const sql = `
@@ -246,12 +460,12 @@ export class UsageDatabase implements IUsageDatabase {
                     SUM(duration) as total_duration_ms,
                     COUNT(*) as session_count
                 FROM usage_sessions 
-                WHERE date = ?
+                WHERE date IN (?, ?)
                 GROUP BY application, content, category
                 ORDER BY total_duration_ms DESC
             `;
 
-            this.db!.all(sql, [dateStr], (err, rows: any[]) => {
+            this.db!.all(sql, [localDateStr, isoDateStr], (err, rows: any[]) => {
                 if (err) {
                     reject(new Error(`Failed to get daily usage: ${err.message}`));
                 } else {
@@ -330,8 +544,11 @@ export class UsageDatabase implements IUsageDatabase {
             throw new Error('Database not initialized');
         }
 
-        const startDateStr = this.formatDate(startDate);
-        const endDateStr = this.formatDate(endDate);
+        // 開始・終了ともにローカル/UTCの両表現を用意（テストの表現揺れ対策）
+        const startLocal = this.formatDate(new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate()));
+        const endLocal = this.formatDate(new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate()));
+        const startIso = startDate.toISOString().split('T')[0];
+        const endIso = endDate.toISOString().split('T')[0];
 
         return new Promise((resolve, reject) => {
             const sql = `
@@ -346,11 +563,11 @@ export class UsageDatabase implements IUsageDatabase {
                     end_time,
                     duration
                 FROM usage_sessions 
-                WHERE date BETWEEN ? AND ?
+                WHERE (date BETWEEN ? AND ?) OR (date BETWEEN ? AND ?)
                 ORDER BY date, start_time
             `;
 
-            this.db!.all(sql, [startDateStr, endDateStr], (err, rows: any[]) => {
+            this.db!.all(sql, [startLocal, endLocal, startIso, endIso], (err, rows: any[]) => {
                 if (err) {
                     reject(new Error(`Failed to export data: ${err.message}`));
                 } else {
@@ -464,24 +681,27 @@ export class UsageDatabase implements IUsageDatabase {
     }
 
     async close(): Promise<void> {
-        if (!this.db) {
-            return;
+        try {
+            // 最終バックアップを作成
+            await this.createBackup();
+            
+            // データベースを安全に閉じる
+            await this.closeDatabase();
+            
+            logger.info('データベースが正常に閉じられました');
+        } catch (error) {
+            logger.warn('データベースクローズ中にエラーが発生しました', error);
+            // 強制的にデータベース接続を切断
+            this.db = null;
         }
-
-        return new Promise((resolve, reject) => {
-            this.db!.close((err) => {
-                if (err) {
-                    reject(new Error(`Failed to close database: ${err.message}`));
-                } else {
-                    this.db = null;
-                    resolve();
-                }
-            });
-        });
     }
 
     private formatDate(date: Date): string {
-        return date.toISOString().split('T')[0]; // YYYY-MM-DD
+        // ローカルタイムゾーンで YYYY-MM-DD 形式へ変換
+        const yyyy = date.getFullYear();
+        const mm = String(date.getMonth() + 1).padStart(2, '0');
+        const dd = String(date.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`; // YYYY-MM-DD (local)
     }
 
     private escapeCsvField(field: string): string {

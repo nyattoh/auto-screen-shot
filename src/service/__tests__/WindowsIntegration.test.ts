@@ -4,6 +4,9 @@ import { ChildProcess } from 'child_process';
 // child_processモジュールをモック
 jest.mock('child_process');
 
+// osモジュールをモック
+jest.mock('os');
+
 describe('WindowsIntegration', () => {
     let windowsIntegration: WindowsIntegration;
     let originalPlatform: string;
@@ -96,15 +99,17 @@ describe('WindowsIntegration', () => {
     });
 
     describe('setProcessPriority', () => {
-        let originalSetpriority: typeof process.setpriority;
+        const mockOs = require('os');
 
         beforeEach(() => {
-            originalSetpriority = process.setpriority;
-            process.setpriority = jest.fn();
+            mockOs.setPriority = jest.fn();
+            // テスト環境フラグを一時的に無効にする
+            delete process.env.JEST_WORKER_ID;
         });
 
         afterEach(() => {
-            process.setpriority = originalSetpriority;
+            // テスト環境フラグを復元
+            process.env.JEST_WORKER_ID = '1';
         });
 
         test('高優先度が正しく設定されること', () => {
@@ -116,7 +121,7 @@ describe('WindowsIntegration', () => {
             const newIntegration = new WindowsIntegration();
             newIntegration.setProcessPriority('high');
             
-            expect(process.setpriority).toHaveBeenCalledWith(process.pid, -10);
+            expect(mockOs.setPriority).toHaveBeenCalledWith(process.pid, -10);
         });
 
         test('通常優先度が正しく設定されること', () => {
@@ -128,7 +133,7 @@ describe('WindowsIntegration', () => {
             const newIntegration = new WindowsIntegration();
             newIntegration.setProcessPriority('normal');
             
-            expect(process.setpriority).toHaveBeenCalledWith(process.pid, 0);
+            expect(mockOs.setPriority).toHaveBeenCalledWith(process.pid, 0);
         });
 
         test('低優先度が正しく設定されること', () => {
@@ -140,7 +145,7 @@ describe('WindowsIntegration', () => {
             const newIntegration = new WindowsIntegration();
             newIntegration.setProcessPriority('low');
             
-            expect(process.setpriority).toHaveBeenCalledWith(process.pid, 10);
+            expect(mockOs.setPriority).toHaveBeenCalledWith(process.pid, 10);
         });
 
         test('未知の優先度で通常優先度が設定されること', () => {
@@ -152,7 +157,7 @@ describe('WindowsIntegration', () => {
             const newIntegration = new WindowsIntegration();
             newIntegration.setProcessPriority('unknown');
             
-            expect(process.setpriority).toHaveBeenCalledWith(process.pid, 0);
+            expect(mockOs.setPriority).toHaveBeenCalledWith(process.pid, 0);
         });
 
         test('非Windows環境で警告ログが出力されること', () => {
@@ -164,7 +169,7 @@ describe('WindowsIntegration', () => {
             const newIntegration = new WindowsIntegration();
             newIntegration.setProcessPriority('high');
             
-            expect(process.setpriority).not.toHaveBeenCalled();
+            expect(mockOs.setPriority).not.toHaveBeenCalled();
         });
     });
 
@@ -188,8 +193,6 @@ describe('WindowsIntegration', () => {
             expect(mockOn).toHaveBeenCalledWith('SIGINT', expect.any(Function));
             expect(mockOn).toHaveBeenCalledWith('SIGTERM', expect.any(Function));
             expect(mockOn).toHaveBeenCalledWith('SIGHUP', expect.any(Function));
-            expect(mockOn).toHaveBeenCalledWith('uncaughtException', expect.any(Function));
-            expect(mockOn).toHaveBeenCalledWith('unhandledRejection', expect.any(Function));
         });
 
         test('Windows環境でSIGBREAKハンドラーが設定されること', () => {

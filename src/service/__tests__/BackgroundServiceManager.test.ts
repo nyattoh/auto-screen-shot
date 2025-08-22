@@ -1,9 +1,35 @@
 import { BackgroundServiceManager, StartupMode } from '../BackgroundServiceManager';
 
+// StartupModeHandlerのモック
+const mockStartupModeHandler = {
+    parseArguments: jest.fn(),
+    validateMode: jest.fn(),
+    initializeMode: jest.fn(),
+    getCurrentModeSettings: jest.fn()
+};
+
+jest.mock('../StartupModeHandler', () => ({
+    StartupModeHandler: jest.fn().mockImplementation(() => mockStartupModeHandler)
+}));
+
 describe('BackgroundServiceManager', () => {
     let serviceManager: BackgroundServiceManager;
 
     beforeEach(() => {
+        // モックをリセット
+        jest.clearAllMocks();
+        
+        // StartupModeHandlerのモックを設定
+        mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.BACKGROUND);
+        mockStartupModeHandler.validateMode.mockReturnValue(true);
+        mockStartupModeHandler.initializeMode.mockResolvedValue(undefined);
+        mockStartupModeHandler.getCurrentModeSettings.mockReturnValue({
+            mode: StartupMode.BACKGROUND,
+            hideConsole: true,
+            detachProcess: true,
+            logLevel: 'info'
+        });
+
         serviceManager = new BackgroundServiceManager();
     });
 
@@ -21,31 +47,73 @@ describe('BackgroundServiceManager', () => {
 
     describe('parseArguments', () => {
         test('引数なしでバックグラウンドモードが選択されること', async () => {
+            // parseArgumentsのモックを設定
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.BACKGROUND);
+            
             await serviceManager.initialize([]);
             expect(serviceManager.getCurrentMode()).toBe(StartupMode.BACKGROUND);
         });
 
         test('--devフラグで開発モードが選択されること', async () => {
+            // parseArgumentsのモックを設定
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.DEVELOPMENT);
+            mockStartupModeHandler.getCurrentModeSettings.mockReturnValue({
+                mode: StartupMode.DEVELOPMENT,
+                hideConsole: false,
+                detachProcess: false,
+                logLevel: 'debug'
+            });
+            
             await serviceManager.initialize(['--dev']);
             expect(serviceManager.getCurrentMode()).toBe(StartupMode.DEVELOPMENT);
         });
 
         test('-dフラグで開発モードが選択されること', async () => {
+            // parseArgumentsのモックを設定
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.DEVELOPMENT);
+            mockStartupModeHandler.getCurrentModeSettings.mockReturnValue({
+                mode: StartupMode.DEVELOPMENT,
+                hideConsole: false,
+                detachProcess: false,
+                logLevel: 'debug'
+            });
+            
             await serviceManager.initialize(['-d']);
             expect(serviceManager.getCurrentMode()).toBe(StartupMode.DEVELOPMENT);
         });
 
         test('--foregroundフラグでフォアグラウンドモードが選択されること', async () => {
+            // parseArgumentsのモックを設定
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.FOREGROUND);
+            mockStartupModeHandler.getCurrentModeSettings.mockReturnValue({
+                mode: StartupMode.FOREGROUND,
+                hideConsole: false,
+                detachProcess: false,
+                logLevel: 'info'
+            });
+            
             await serviceManager.initialize(['--foreground']);
             expect(serviceManager.getCurrentMode()).toBe(StartupMode.FOREGROUND);
         });
 
         test('-fフラグでフォアグラウンドモードが選択されること', async () => {
+            // parseArgumentsのモックを設定
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.FOREGROUND);
+            mockStartupModeHandler.getCurrentModeSettings.mockReturnValue({
+                mode: StartupMode.FOREGROUND,
+                hideConsole: false,
+                detachProcess: false,
+                logLevel: 'info'
+            });
+            
             await serviceManager.initialize(['-f']);
             expect(serviceManager.getCurrentMode()).toBe(StartupMode.FOREGROUND);
         });
 
         test('--backgroundフラグでバックグラウンドモードが選択されること', async () => {
+            // parseArgumentsのモックを設定
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.BACKGROUND);
+            
             await serviceManager.initialize(['--background']);
             expect(serviceManager.getCurrentMode()).toBe(StartupMode.BACKGROUND);
         });
@@ -53,6 +121,8 @@ describe('BackgroundServiceManager', () => {
 
     describe('updateConfigurationForMode', () => {
         test('バックグラウンドモードで適切な設定が適用されること', async () => {
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.BACKGROUND);
+            
             await serviceManager.initialize(['--background']);
             const config = serviceManager.getConfiguration();
             
@@ -63,6 +133,14 @@ describe('BackgroundServiceManager', () => {
         });
 
         test('開発モードで適切な設定が適用されること', async () => {
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.DEVELOPMENT);
+            mockStartupModeHandler.getCurrentModeSettings.mockReturnValue({
+                mode: StartupMode.DEVELOPMENT,
+                hideConsole: false,
+                detachProcess: false,
+                logLevel: 'debug'
+            });
+            
             await serviceManager.initialize(['--dev']);
             const config = serviceManager.getConfiguration();
             
@@ -73,6 +151,14 @@ describe('BackgroundServiceManager', () => {
         });
 
         test('フォアグラウンドモードで適切な設定が適用されること', async () => {
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.FOREGROUND);
+            mockStartupModeHandler.getCurrentModeSettings.mockReturnValue({
+                mode: StartupMode.FOREGROUND,
+                hideConsole: false,
+                detachProcess: false,
+                logLevel: 'info'
+            });
+            
             await serviceManager.initialize(['--foreground']);
             const config = serviceManager.getConfiguration();
             
@@ -85,6 +171,14 @@ describe('BackgroundServiceManager', () => {
 
     describe('getCurrentMode', () => {
         test('現在のモードが正しく取得されること', async () => {
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.DEVELOPMENT);
+            mockStartupModeHandler.getCurrentModeSettings.mockReturnValue({
+                mode: StartupMode.DEVELOPMENT,
+                hideConsole: false,
+                detachProcess: false,
+                logLevel: 'debug'
+            });
+            
             await serviceManager.initialize(['--dev']);
             expect(serviceManager.getCurrentMode()).toBe(StartupMode.DEVELOPMENT);
         });
@@ -102,6 +196,9 @@ describe('BackgroundServiceManager', () => {
 
     describe('initialize', () => {
         test('初期化エラーが適切に処理されること', async () => {
+            // 無効な引数はデフォルトのバックグラウンドモードにフォールバック
+            mockStartupModeHandler.parseArguments.mockReturnValue(StartupMode.BACKGROUND);
+            
             // 無効な引数で初期化を試行
             await expect(serviceManager.initialize(['--invalid-flag'])).resolves.not.toThrow();
             

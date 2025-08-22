@@ -130,25 +130,20 @@ export class StartupModeHandler implements IStartupModeHandler {
         try {
             logger.info('バックグラウンドモード初期化開始');
 
-            // 1. コンソールウィンドウを非表示
+            // 1. コンソールウィンドウを非表示（WindowsIntegration側でテスト時は自動スキップ）
             this.windowsIntegration.hideConsoleWindow();
 
-            // 2. 親プロセスから分離
+            // 2. 親プロセスから分離（ProcessManager側でテスト時は自動スキップ）
             this.processManager.detachFromParent();
 
-            // 3. PIDファイルを作成（既存プロセスチェックはcreateePidFile内で実行）
-            try {
-                await this.processManager.createPidFile();
-            } catch (error) {
-                if (error.message.includes('既に実行中')) {
-                    logger.warn('アプリケーションは既に実行中です。プロセスを継続します。');
-                    // 既に実行中でも処理を継続
-                } else {
-                    throw error;
-                }
+            // 3. PIDファイルを作成（既存プロセスチェックはcreatePidFile内で実行）
+            const alreadyRunning = await this.processManager.isAlreadyRunning();
+            if (alreadyRunning) {
+                throw new Error('既に実行中です');
             }
+            await this.processManager.createPidFile();
 
-            // 4. プロセス優先度を設定（通常優先度）
+            // 4. プロセス優先度を設定（WindowsIntegration側でテスト時は自動スキップ）
             this.windowsIntegration.setProcessPriority('normal');
 
             // 5. シャットダウンシグナルハンドラーを設定

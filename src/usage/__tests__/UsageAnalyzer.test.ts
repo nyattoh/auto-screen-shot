@@ -14,9 +14,9 @@ class MockUsageDatabase implements IUsageDatabase {
         this.mockHourlyUsage = data;
     }
 
-    async initialize(): Promise<void> {}
+    async initialize(): Promise<void> { return; }
     
-    async saveSession(): Promise<void> {}
+    async saveSession(): Promise<void> { return; }
     
     async getDailyUsage(date: Date): Promise<DailyUsage[]> {
         return this.mockDailyUsage;
@@ -30,19 +30,22 @@ class MockUsageDatabase implements IUsageDatabase {
         return { startDate: new Date(), endDate: new Date() };
     }
     
-    async cleanup(): Promise<void> {}
+    async cleanup(): Promise<void> { return; }
     
-    async exportToCSV(): Promise<string> {
-        return '';
-    }
+    async exportToCSV(): Promise<string> { return ''; }
     
-    async saveSitePattern(): Promise<void> {}
+    async saveSitePattern(): Promise<void> { return; }
     
-    async getSitePatterns() {
-        return [];
-    }
+    async getSitePatterns() { return []; }
     
-    async close(): Promise<void> {}
+    async close(): Promise<void> { return; }
+
+    // 新しくIUsageDatabaseに追加されたメソッドのダミー実装
+    async getDetailedSessions(): Promise<any[]> { return []; }
+    async getApplicationSessions(): Promise<any[]> { return []; }
+    async getDateRangeSessions(): Promise<any[]> { return []; }
+    async getAvailableDates(): Promise<string[]> { return []; }
+    async getDateUsageSummary(): Promise<any> { return { date: '', totalDuration: 0, sessionCount: 0, applicationCount: 0, topApplications: [] }; }
 }
 
 describe('UsageAnalyzer', () => {

@@ -19,7 +19,7 @@ describe('ShutdownManager', () => {
         originalProcessExit = process.exit;
         
         process.on = jest.fn();
-        process.exit = jest.fn();
+        process.exit = jest.fn() as any;
 
         // モックインスタンスを作成
         mockProcessManager = new ProcessManager() as jest.Mocked<ProcessManager>;

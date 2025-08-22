@@ -19,7 +19,8 @@ describe('StartupModeHandler', () => {
         originalProcessExit = process.exit;
         originalConsoleLog = console.log;
         
-        process.exit = jest.fn();
+        // 型不一致を避けるために any キャスト
+        process.exit = jest.fn() as any;
         console.log = jest.fn();
 
         // モックインスタンスを作成

@@ -1,6 +1,6 @@
 import * as fs from 'fs-extra';
 import * as path from 'path';
-import { app } from 'electron';
+import { app, dialog, BrowserWindow } from 'electron';
 
 export enum LogLevel {
     DEBUG = 'DEBUG',
@@ -9,10 +9,19 @@ export enum LogLevel {
     ERROR = 'ERROR'
 }
 
+export interface NotificationOptions {
+    showDialog: boolean;
+    showTooltip: boolean;
+    critical: boolean;
+}
+
 export class Logger {
     private logFile: string;
     private maxLogSize: number = 10 * 1024 * 1024; // 10MB
     private maxLogFiles: number = 5;
+    private errorCount: number = 0;
+    private lastNotificationTime: number = 0;
+    private notificationThrottleMs: number = 5000; // 5秒間隔
 
     constructor() {
         try {
@@ -58,21 +67,25 @@ export class Logger {
             // ログファイルに書き込み（UTF-8エンコーディングを明示的に指定）
             await fs.appendFile(this.logFile, logMessage, 'utf8');
             
-            // コンソールにも出力
-            const consoleMessage = `[${level}] ${message}`;
-            switch (level) {
-                case LogLevel.DEBUG:
-                    console.debug(consoleMessage);
-                    break;
-                case LogLevel.INFO:
-                    console.info(consoleMessage);
-                    break;
-                case LogLevel.WARN:
-                    console.warn(consoleMessage);
-                    break;
-                case LogLevel.ERROR:
-                    console.error(consoleMessage, error);
-                    break;
+            // テスト環境ではJestの終了後ログによる失敗を防ぐため、コンソール出力を抑制
+            const isTestEnv = !!process.env.JEST_WORKER_ID;
+            if (!isTestEnv) {
+                // コンソールにも出力
+                const consoleMessage = `[${level}] ${message}`;
+                switch (level) {
+                    case LogLevel.DEBUG:
+                        console.debug(consoleMessage);
+                        break;
+                    case LogLevel.INFO:
+                        console.info(consoleMessage);
+                        break;
+                    case LogLevel.WARN:
+                        console.warn(consoleMessage);
+                        break;
+                    case LogLevel.ERROR:
+                        console.error(consoleMessage, error);
+                        break;
+                }
             }
         } catch (writeError) {
             console.error('ログ書き込みエラー:', writeError);
@@ -116,18 +129,10 @@ export class Logger {
         this.writeLog(LogLevel.INFO, fullMessage);
     }
 
-    public warn(message: string, error?: Error | any): void {
-        if (error instanceof Error) {
-            this.writeLog(LogLevel.WARN, message, error);
-        } else if (error) {
-            const fullMessage = `${message} | Data: ${JSON.stringify(error, null, 2)}`;
-            this.writeLog(LogLevel.WARN, fullMessage);
-        } else {
-            this.writeLog(LogLevel.WARN, message);
-        }
-    }
 
-    public error(message: string, error?: Error | any): void {
+    public error(message: string, error?: Error | any, notification?: NotificationOptions): void {
+        this.errorCount++;
+        
         if (error instanceof Error) {
             this.writeLog(LogLevel.ERROR, message, error);
         } else if (error) {
@@ -136,6 +141,121 @@ export class Logger {
         } else {
             this.writeLog(LogLevel.ERROR, message);
         }
+
+        // ユーザー通知（オプション）
+        if (notification && this.shouldShowNotification()) {
+            this.showErrorNotification(message, error, notification);
+        }
+    }
+
+    public warn(message: string, error?: Error | any, notification?: NotificationOptions): void {
+        if (error instanceof Error) {
+            this.writeLog(LogLevel.WARN, message, error);
+        } else if (error) {
+            const fullMessage = `${message} | Data: ${JSON.stringify(error, null, 2)}`;
+            this.writeLog(LogLevel.WARN, fullMessage);
+        } else {
+            this.writeLog(LogLevel.WARN, message);
+        }
+
+        // 警告も通知対象にする場合
+        if (notification && this.shouldShowNotification()) {
+            this.showWarningNotification(message, error, notification);
+        }
+    }
+
+    /**
+     * 通知のスロットリング判定
+     */
+    private shouldShowNotification(): boolean {
+        const now = Date.now();
+        if (now - this.lastNotificationTime > this.notificationThrottleMs) {
+            this.lastNotificationTime = now;
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * エラー通知を表示
+     */
+    private showErrorNotification(message: string, error?: Error | any, options?: NotificationOptions): void {
+        try {
+            if (!app || !app.isReady()) {
+                return;
+            }
+
+            const errorMessage = error instanceof Error ? error.message : (error ? String(error) : '');
+            const fullMessage = errorMessage ? `${message}\n\n詳細: ${errorMessage}` : message;
+
+            if (options?.showDialog && dialog) {
+                // 重要なエラーの場合はダイアログを表示
+                if (options.critical) {
+                    dialog.showErrorBox('重要なエラー', fullMessage);
+                } else {
+                    dialog.showMessageBox({
+                        type: 'error',
+                        title: 'エラー',
+                        message: 'アプリケーションエラー',
+                        detail: fullMessage,
+                        buttons: ['OK', 'ログを確認']
+                    }).then((result) => {
+                        if (result.response === 1) {
+                            // ログファイルを開く
+                            const { shell } = require('electron');
+                            shell.openPath(this.logFile);
+                        }
+                    });
+                }
+            }
+
+        } catch (notificationError) {
+            console.error('通知表示エラー:', notificationError);
+        }
+    }
+
+    /**
+     * 警告通知を表示
+     */
+    private showWarningNotification(message: string, error?: Error | any, options?: NotificationOptions): void {
+        try {
+            if (!app || !app.isReady() || !options?.showDialog) {
+                return;
+            }
+
+            const errorMessage = error instanceof Error ? error.message : (error ? String(error) : '');
+            const fullMessage = errorMessage ? `${message}\n\n詳細: ${errorMessage}` : message;
+
+            if (dialog) {
+                dialog.showMessageBox({
+                    type: 'warning',
+                    title: '警告',
+                    message: 'アプリケーション警告',
+                    detail: fullMessage,
+                    buttons: ['OK']
+                });
+            }
+
+        } catch (notificationError) {
+            console.error('警告通知表示エラー:', notificationError);
+        }
+    }
+
+    /**
+     * エラー統計を取得
+     */
+    public getErrorStats(): { errorCount: number; lastNotification: Date | null } {
+        return {
+            errorCount: this.errorCount,
+            lastNotification: this.lastNotificationTime > 0 ? new Date(this.lastNotificationTime) : null
+        };
+    }
+
+    /**
+     * エラーカウントをリセット
+     */
+    public resetErrorCount(): void {
+        this.errorCount = 0;
     }
 
     public getLogFilePath(): string {

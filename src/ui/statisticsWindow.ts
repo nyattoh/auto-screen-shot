@@ -88,6 +88,55 @@ export class StatisticsWindow {
                 return [];
             }
         });
+
+        // CSVエクスポート関連のIPCハンドラー
+        ipcMain.handle('export-csv', async (event, startDateStr: string, endDateStr: string) => {
+            try {
+                const startDate = new Date(startDateStr);
+                const endDate = new Date(endDateStr);
+                const csvData = await this.usageDatabase.exportToCSV(startDate, endDate);
+                return { success: true, data: csvData };
+            } catch (error) {
+                logger.error('CSVエクスポートに失敗', error);
+                return { success: false, error: error.message };
+            }
+        });
+
+        ipcMain.handle('get-date-range-sessions', async (event, startDateStr: string, endDateStr: string) => {
+            try {
+                const startDate = new Date(startDateStr);
+                const endDate = new Date(endDateStr);
+                return await this.usageDatabase.getDateRangeSessions(startDate, endDate);
+            } catch (error) {
+                logger.error('日付範囲セッションの取得に失敗', error);
+                return [];
+            }
+        });
+
+        ipcMain.handle('save-csv-file', async (event, csvData: string, defaultFileName?: string) => {
+            try {
+                const { dialog } = require('electron');
+                const result = await dialog.showSaveDialog(this.window, {
+                    title: 'CSVファイルを保存',
+                    defaultPath: defaultFileName || `usage-statistics-${new Date().toISOString().split('T')[0]}.csv`,
+                    filters: [
+                        { name: 'CSV Files', extensions: ['csv'] },
+                        { name: 'All Files', extensions: ['*'] }
+                    ]
+                });
+
+                if (!result.canceled && result.filePath) {
+                    const fs = require('fs');
+                    fs.writeFileSync(result.filePath, csvData, 'utf8');
+                    return { success: true, filePath: result.filePath };
+                } else {
+                    return { success: false, canceled: true };
+                }
+            } catch (error) {
+                logger.error('CSVファイル保存に失敗', error);
+                return { success: false, error: error.message };
+            }
+        });
     }
 
     public create(): void {
@@ -145,8 +194,9 @@ export class StatisticsWindow {
 
             const totalCount = screenshotFiles.length;
 
-            // 今日の日付文字列を生成
-            const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+            // 今日の日付文字列を生成 (ローカルタイムゾーン)
+            const now = new Date();
+            const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`; // YYYY-MM-DD
 
             const todayCount = screenshotFiles.filter(file => {
                 // screenshot-2025-08-02T11-24-12-808Z.png の形式から日付を抽出

@@ -2,10 +2,18 @@ import * as fs from 'fs-extra';
 import * as path from 'path';
 import { app } from 'electron';
 
+export interface StatisticsConfig {
+    dataRetentionDays: number;
+    cleanupIntervalHours: number;
+    enableImageOptimization: boolean;
+    webpQuality: number;
+}
+
 export class Settings {
     private saveDirectory: string;
     private captureInterval: number;
     private autoStart: boolean;
+    private statisticsConfig: StatisticsConfig;
     private configPath: string;
 
     constructor() {
@@ -20,6 +28,7 @@ export class Settings {
                 this.saveDirectory = config.saveDirectory || path.join(app.getPath('documents'), 'Screenshots');
                 this.captureInterval = config.captureInterval || 180000; // 3分
                 this.autoStart = config.autoStart || true;
+                this.statisticsConfig = config.statisticsConfig || this.getDefaultStatisticsConfig();
             } else {
                 this.setDefaultSettings();
             }
@@ -32,14 +41,25 @@ export class Settings {
         this.saveDirectory = path.join(app.getPath('documents'), 'Screenshots');
         this.captureInterval = 180000; // 3分
         this.autoStart = true;
+        this.statisticsConfig = this.getDefaultStatisticsConfig();
         this.saveSettings();
+    }
+
+    private getDefaultStatisticsConfig(): StatisticsConfig {
+        return {
+            dataRetentionDays: 90, // 90日間データを保持
+            cleanupIntervalHours: 24, // 24時間ごとにクリーンアップ
+            enableImageOptimization: true,
+            webpQuality: 80
+        };
     }
 
     public saveSettings(): void {
         const config = {
             saveDirectory: this.saveDirectory,
             captureInterval: this.captureInterval,
-            autoStart: this.autoStart
+            autoStart: this.autoStart,
+            statisticsConfig: this.statisticsConfig
         };
         fs.ensureDirSync(path.dirname(this.configPath));
         fs.writeJsonSync(this.configPath, config, { spaces: 2 });
@@ -74,6 +94,15 @@ export class Settings {
 
     public getAutoStart(): boolean {
         return this.autoStart;
+    }
+
+    public setStatisticsConfig(config: StatisticsConfig): void {
+        this.statisticsConfig = config;
+        this.saveSettings();
+    }
+
+    public getStatisticsConfig(): StatisticsConfig {
+        return { ...this.statisticsConfig };
     }
 }
 

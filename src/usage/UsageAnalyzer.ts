@@ -158,6 +158,10 @@ export class UsageAnalyzer implements IUsageAnalyzer {
     }
 
     private formatDate(date: Date): string {
-        return date.toISOString().split('T')[0]; // YYYY-MM-DD
+        // ローカルタイムゾーンで YYYY-MM-DD 形式へ変換
+        const yyyy = date.getFullYear();
+        const mm = String(date.getMonth() + 1).padStart(2, '0');
+        const dd = String(date.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`; // YYYY-MM-DD (local)
     }
 }
