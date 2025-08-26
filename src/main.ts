@@ -74,6 +74,9 @@ import { TimeTracker } from './usage/TimeTracker';
 import { StatisticsManager } from './statistics/StatisticsManager';
 import { ImageOptimizer } from './optimization/ImageOptimizer';
 import { PerformanceMonitor } from './monitoring/PerformanceMonitor';
+// 型参照（ビルド安定化のため静的import）
+import type { UsageSession as TrackerSession } from './types';
+import type { UsageSession as DbUsageSession } from './usage/UsageDatabase';
 
 // エラーダイアログの重複表示を防ぐフラグ
 let errorDialogShown = false;
@@ -137,6 +140,7 @@ class AutoScreenCaptureApp {
     private imageOptimizer: ImageOptimizer;
     private windowsIntegration: WindowsIntegration | null = null;
     private performanceMonitor: PerformanceMonitor;
+    private sessionFlushTimer: NodeJS.Timeout | null = null;
 
     constructor() {
         try {
@@ -147,24 +151,14 @@ class AutoScreenCaptureApp {
             
             // 使用時間管理コンポーネントを初期化
             this.usageDatabase = new UsageDatabase();
-            this.timeTracker = new TimeTracker();
+            // 最小セッション時間を短縮（30秒）して反映を早める
+            this.timeTracker = new TimeTracker(30000, 5 * 60 * 1000);
             
             // 既存のコンポーネントを初期化
             this.screenshotManager = new ScreenshotManager();
-            this.settings = new Settings();
-            this.autoStartManager = new AutoStartManager();
-            
-            // 統計管理を初期化
-            this.statisticsManager = new StatisticsManager(this.usageDatabase, this.settings);
-            
-            // 画像最適化を初期化
-            const statsConfig = this.settings.getStatisticsConfig();
-            this.imageOptimizer = new ImageOptimizer({
-                quality: statsConfig.webpQuality,
-                format: statsConfig.enableImageOptimization ? 'webp' : 'png',
-                removeOriginal: false
-            });
-            
+            // Settings / AutoStart は app.ready 後に初期化する
+            // 統計管理も Settings 依存のため遅延
+
             // パフォーマンス監視を初期化
             this.performanceMonitor = new PerformanceMonitor({
                 maxHeapUsedMB: 400,
@@ -173,7 +167,7 @@ class AutoScreenCaptureApp {
                 gcIntervalMs: 300000 // 5分間隔
             });
             
-            this.statisticsWindow = new StatisticsWindow(this.screenshotManager, this.settings, this.usageDatabase);
+            // 統計ウィンドウは後で settings 準備後に構築
             
             // シャットダウン管理を初期化
             this.initializeShutdownManager();
@@ -187,7 +181,8 @@ class AutoScreenCaptureApp {
                 showTooltip: false,
                 critical: true
             });
-            app.quit();
+            // ログ書き込みが完了する余裕を持たせてから終了
+            setTimeout(() => app.quit(), 500);
         }
     }
 
@@ -206,7 +201,18 @@ class AutoScreenCaptureApp {
             this.shutdownManager.addShutdownCallback(async () => {
                 logger.info('アプリケーション固有のシャットダウン処理を実行します');
                 this.screenshotManager.stopCapture();
-                
+
+                // セッションフラッシュタイマーを停止
+                try {
+                    if (this.sessionFlushTimer) {
+                        clearInterval(this.sessionFlushTimer);
+                        this.sessionFlushTimer = null;
+                        logger.info('セッション定期フラッシュを停止しました');
+                    }
+                } catch (error) {
+                    logger.warn('セッション定期フラッシュ停止でエラー', error);
+                }
+
                 // 統計管理を停止
                 try {
                     this.statisticsManager.stop();
@@ -225,12 +231,13 @@ class AutoScreenCaptureApp {
                     logger.error('ウィンドウ追跡の停止でエラー', error);
                 }
                 
-                // TimeTrackerのセッションを終了
+                // TimeTrackerのセッションを終了して保存
                 try {
-                    this.timeTracker.endSession();
-                    logger.info('TimeTrackerセッションを終了しました');
+                    const ended = this.timeTracker.endSession();
+                    await this.persistEndedSession(ended);
+                    logger.info('TimeTrackerセッションを終了し保存しました');
                 } catch (error) {
-                    logger.error('TimeTrackerセッションの終了でエラー', error);
+                    logger.error('TimeTrackerセッションの終了/保存でエラー', error);
                 }
                 
                 // パフォーマンス監視を停止
@@ -271,7 +278,31 @@ class AutoScreenCaptureApp {
             
             // Electronアプリケーションの準備を待つ
             await app.whenReady();
-            
+
+            // 設定と関連モジュールをここで初期化（app.ready 後）
+            this.settings = new Settings();
+            this.autoStartManager = new AutoStartManager();
+            this.statisticsManager = new StatisticsManager(this.usageDatabase, this.settings);
+            this.statisticsWindow = new StatisticsWindow(this.screenshotManager, this.settings, this.usageDatabase);
+
+            // 使用統計データベースを初期化（トレイ生成や追跡開始の前に）
+            try {
+                await this.usageDatabase.initialize();
+                logger.info('使用統計データベース初期化完了（起動時）');
+            } catch (dbError) {
+                logger.error('使用統計データベース初期化エラー（起動時）', dbError);
+            }
+
+            // データが空の場合は、バックアップから自動統合復旧を試みる
+            try {
+                const recovered = await this.usageDatabase.recoverIfEmpty();
+                if (recovered && recovered.merged > 0) {
+                    logger.info('バックアップから自動復旧しました', recovered);
+                }
+            } catch (e) {
+                logger.warn('バックアップからの自動復旧に失敗', e);
+            }
+
             this.createTray();
             this.setupAutoStart();
             this.startScreenshotCapture();
@@ -337,11 +368,16 @@ class AutoScreenCaptureApp {
         try {
             // アイコンファイルが存在しない場合はデフォルトアイコンを使用
             let trayIcon;
-            const iconPath = path.join(__dirname, '../assets/icon.png');
+            // Windows では .ico を優先（表示互換性向上）
+            const icoPath = path.join(__dirname, '../assets/icon.ico');
+            const pngPath = path.join(__dirname, '../assets/icon.png');
             
             try {
-                trayIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
-                logger.debug(`トレイアイコン読み込み完了: ${iconPath}`);
+                const iconToUse = process.platform === 'win32' && fs.existsSync(icoPath) ? icoPath : pngPath;
+                trayIcon = nativeImage.createFromPath(iconToUse);
+                // サイズ調整（Windows の通知領域に合わせる）
+                trayIcon = trayIcon.isEmpty() ? nativeImage.createEmpty() : trayIcon.resize({ width: 16, height: 16 });
+                logger.debug(`トレイアイコン読み込み完了: ${iconToUse}`);
             } catch (iconError) {
                 logger.warn('カスタムアイコンが見つかりません。デフォルトアイコンを使用します', iconError);
                 trayIcon = nativeImage.createEmpty().resize({ width: 16, height: 16 });
@@ -370,6 +406,18 @@ class AutoScreenCaptureApp {
                 {
                     label: 'データメンテナンス',
                     click: () => this.performMaintenance()
+                },
+                {
+                    label: 'データ復元（バックアップ統合）',
+                    click: () => this.performRestoreFromBackups()
+                },
+                {
+                    label: '日付を再計算（ローカル日付に正規化）',
+                    click: () => this.normalizeDates()
+                },
+                {
+                    label: 'CSVをインポート',
+                    click: () => this.importCsv()
                 },
                 { type: 'separator' },
                 {
@@ -597,35 +645,244 @@ class AutoScreenCaptureApp {
             this.windowsIntegration = new WindowsIntegration();
             
             // ウィンドウ変更の監視を開始
-            this.windowsIntegration.startActiveWindowTracking((windowsWindowInfo: WindowsWindowInfo | null) => {
-                if (windowsWindowInfo) {
-                    // WindowsWindowInfo を WindowInfo に変換
-                    const windowInfo: WindowInfo = {
-                        title: windowsWindowInfo.title,
-                        processName: windowsWindowInfo.processName,
-                        processId: windowsWindowInfo.pid,
-                        bounds: {
-                            x: windowsWindowInfo.x || 0,
-                            y: windowsWindowInfo.y || 0,
-                            width: windowsWindowInfo.width || 0,
-                            height: windowsWindowInfo.height || 0
-                        },
-                        timestamp: new Date()
-                    };
-                    
-                    this.timeTracker.startSession(windowInfo);
-                    logger.debug('ウィンドウセッション開始', {
-                        title: windowInfo.title,
-                        processName: windowInfo.processName,
-                        processId: windowInfo.processId
-                    });
+            this.windowsIntegration.startActiveWindowTracking(async (windowsWindowInfo: WindowsWindowInfo | null) => {
+                try {
+                    // 直前のセッションを終了して保存
+                    const ended = this.timeTracker.endSession();
+                    await this.persistEndedSession(ended);
+
+                    if (windowsWindowInfo) {
+                        // 新しいアクティブウィンドウでセッション開始
+                        const windowInfo: WindowInfo = {
+                            title: windowsWindowInfo.title,
+                            processName: windowsWindowInfo.processName,
+                            processId: windowsWindowInfo.pid,
+                            bounds: {
+                                x: windowsWindowInfo.x || 0,
+                                y: windowsWindowInfo.y || 0,
+                                width: windowsWindowInfo.width || 0,
+                                height: windowsWindowInfo.height || 0
+                            },
+                            timestamp: new Date()
+                        };
+                        this.timeTracker.startSession(windowInfo);
+                        logger.debug('ウィンドウセッション開始', {
+                            title: windowInfo.title,
+                            processName: windowInfo.processName,
+                            processId: windowInfo.processId
+                        });
+                    }
+                } catch (e) {
+                    logger.error('ウィンドウ切替処理中にエラー', e);
                 }
             });
             
             logger.info('使用統計追跡が開始されました');
+
+            // 起動直後にも現在のアクティブウィンドウからセッションを開始（初回の変化待ちを回避）
+            try {
+                const cur = await this.windowsIntegration.getCurrentActiveWindow();
+                if (cur) {
+                    const windowInfo: WindowInfo = {
+                        title: cur.title,
+                        processName: cur.processName,
+                        processId: cur.pid,
+                        bounds: { x: cur.x || 0, y: cur.y || 0, width: cur.width || 0, height: cur.height || 0 },
+                        timestamp: new Date()
+                    };
+                    this.timeTracker.startSession(windowInfo);
+                    logger.debug('起動直後のアクティブウィンドウでセッション開始', { processName: cur.processName, title: cur.title });
+                }
+            } catch (e) {
+                logger.warn('起動直後のセッション開始に失敗', e);
+            }
+
+            // 一定間隔で現在のセッションを区切って保存（ウィンドウが変わらない場合もデータが出るように）
+            if (this.sessionFlushTimer) {
+                clearInterval(this.sessionFlushTimer);
+            }
+            this.sessionFlushTimer = setInterval(async () => {
+                try {
+                    // 現在のセッションが閾値未満なら区切らない（短時間スキップを防ぐ）
+                    const current = this.timeTracker.getCurrentSession();
+                    const cfg = this.timeTracker.getConfig();
+                    if (current) {
+                        const now = Date.now();
+                        const dur = now - current.startTime.getTime();
+                        if (dur < cfg.minSessionDuration) {
+                            // まだ短いので終了せず継続
+                            return;
+                        }
+                    }
+
+                    const ended = this.timeTracker.endSession();
+                    await this.persistEndedSession(ended);
+
+                    if (this.windowsIntegration) {
+                        const cur = await this.windowsIntegration.getCurrentActiveWindow();
+                        if (cur) {
+                            const windowInfo: WindowInfo = {
+                                title: cur.title,
+                                processName: cur.processName,
+                                processId: cur.pid,
+                                bounds: { x: cur.x || 0, y: cur.y || 0, width: cur.width || 0, height: cur.height || 0 },
+                                timestamp: new Date()
+                            };
+                            this.timeTracker.startSession(windowInfo);
+                        }
+                    }
+                } catch (e) {
+                    logger.warn('セッション定期フラッシュでエラー', e);
+                }
+            }, 60000); // 1分ごと
         } catch (error) {
             logger.error('使用統計追跡の開始に失敗しました', error);
         }
+    }
+
+    /**
+     * データ復元（バックアップ統合）
+     */
+    private async performRestoreFromBackups(): Promise<void> {
+        try {
+            const { dialog } = require('electron');
+            const response = await dialog.showMessageBox({
+                type: 'question',
+                title: 'データ復元',
+                message: 'バックアップを統合して復元しますか？',
+                detail: 'AppData内の全バックアップとリポジトリ直下の旧DBを重複排除でマージします。',
+                buttons: ['キャンセル', '実行'],
+                defaultId: 1
+            });
+            if (response.response !== 1) return;
+
+            const result = await this.usageDatabase.restoreFromBackups({ includeLegacy: true });
+            logger.info('手動復元完了', result);
+
+            await dialog.showMessageBox({
+                type: 'info',
+                title: '復元完了',
+                message: 'バックアップからの復元が完了しました',
+                detail: `統合元: ${result.sources} ファイル\n追加セッション: ${result.merged} 件`
+            });
+            try { await this.statisticsWindow.reopenDatabase(); } catch {}
+            try { this.statisticsWindow.refresh(); } catch {}
+        } catch (error) {
+            logger.error('データ復元エラー', error);
+            const { dialog } = require('electron');
+            dialog.showErrorBox('復元エラー', `復元中にエラーが発生しました:\n\n${error.message}`);
+        }
+    }
+
+    /**
+     * CSVを選択してインポート
+     */
+    private async importCsv(): Promise<void> {
+        try {
+            const { dialog } = require('electron');
+            const sel = await dialog.showOpenDialog({
+                title: 'CSVを選択',
+                filters: [ { name: 'CSV Files', extensions: ['csv'] } ],
+                properties: ['openFile']
+            });
+            if (sel.canceled || !sel.filePaths || sel.filePaths.length === 0) return;
+            const file = sel.filePaths[0];
+            const imported = await this.usageDatabase.importFromCSV(file);
+            logger.info('CSVインポート完了', { imported, file });
+            await dialog.showMessageBox({
+                type: 'info',
+                title: 'CSVインポート',
+                message: 'CSVのインポートが完了しました',
+                detail: `インポート件数: ${imported}`
+            });
+            try { await this.statisticsWindow.reopenDatabase(); } catch {}
+            try { this.statisticsWindow.refresh(); } catch {}
+        } catch (error) {
+            logger.error('CSVインポートエラー', error);
+            const { dialog } = require('electron');
+            dialog.showErrorBox('CSVインポートエラー', `インポート中にエラーが発生しました:\n\n${error.message}`);
+        }
+    }
+
+    /**
+     * DB内のdate列を start_time のローカル日付で再計算
+     */
+    private async normalizeDates(): Promise<void> {
+        try {
+            const { dialog } = require('electron');
+            const confirm = await dialog.showMessageBox({
+                type: 'question',
+                title: '日付の再計算',
+                message: '全レコードのdate列をローカル日付に再計算しますか？',
+                detail: 'UTC/ローカルのズレで日付がずれている場合に使用します。処理には少し時間がかかる場合があります。',
+                buttons: ['キャンセル', '実行'],
+                defaultId: 1
+            });
+            if (confirm.response !== 1) return;
+
+            const result = await this.usageDatabase.normalizeDates();
+            logger.info('日付の再計算完了', result);
+
+            await dialog.showMessageBox({
+                type: 'info',
+                title: '日付再計算完了',
+                message: '日付の再計算が完了しました',
+                detail: `更新件数: ${result.updated} / ${result.total}`
+            });
+
+            try { await this.statisticsWindow.reopenDatabase(); } catch {}
+            try { this.statisticsWindow.refresh(); } catch {}
+        } catch (error) {
+            logger.error('日付再計算エラー', error);
+            const { dialog } = require('electron');
+            dialog.showErrorBox('日付再計算エラー', `処理中にエラーが発生しました:\n\n${error.message}`);
+        }
+    }
+
+    /**
+     * TimeTracker の終了セッションをDBに保存
+     */
+    private async persistEndedSession(session: TrackerSession | null): Promise<void> {
+        if (!session) return;
+        if (!session.isValid) return;
+        try {
+            const dbSession: DbUsageSession = {
+                windowTitle: session.windowInfo.title,
+                processName: session.windowInfo.processName,
+                processId: session.windowInfo.processId,
+                application: session.contentInfo.application,
+                content: session.contentInfo.content,
+                category: session.contentInfo.category,
+                startTime: session.startTime,
+                endTime: session.endTime,
+                duration: session.duration,
+                date: this.formatLocalDate(session.startTime)
+            };
+            await this.usageDatabase.saveSession(dbSession);
+            logger.info('使用セッションを保存しました', {
+                date: dbSession.date,
+                application: dbSession.application,
+                content: dbSession.content,
+                category: dbSession.category,
+                duration_min: Math.round(dbSession.duration / 60000)
+            });
+
+            // 統計ウィンドウが開いていれば即時更新
+            try {
+                if (this.statisticsWindow && this.statisticsWindow.isOpen && this.statisticsWindow.isOpen()) {
+                    this.statisticsWindow.refresh();
+                }
+            } catch {}
+        } catch (error) {
+            logger.error('使用セッション保存エラー', error);
+        }
+    }
+
+    private formatLocalDate(date: Date): string {
+        const yyyy = date.getFullYear();
+        const mm = String(date.getMonth() + 1).padStart(2, '0');
+        const dd = String(date.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
     }
 
     /**

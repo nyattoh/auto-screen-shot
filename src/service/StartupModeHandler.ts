@@ -136,10 +136,15 @@ export class StartupModeHandler implements IStartupModeHandler {
             // 2. 親プロセスから分離（ProcessManager側でテスト時は自動スキップ）
             this.processManager.detachFromParent();
 
-            // 3. PIDファイルを作成（既存プロセスチェックはcreatePidFile内で実行）
+            // 3. PIDファイルを作成（既存プロセスチェックは寛容に扱う）
             const alreadyRunning = await this.processManager.isAlreadyRunning();
             if (alreadyRunning) {
-                throw new Error('既に実行中です');
+                // まれに古いPIDが他プロセスに再割り当てされ、誤判定することがあるため
+                // ここでは強制終了せず、PIDファイルを更新しつつ単一インスタンスロックに委ねる
+                logger.warn('PIDファイル上は既に実行中の可能性。PIDファイルを再作成し、単一インスタンスロックで制御します。', {
+                    pidFile: this.processManager.getPidFilePath()
+                });
+                try { await this.processManager.removePidFile(); } catch {}
             }
             await this.processManager.createPidFile();
 

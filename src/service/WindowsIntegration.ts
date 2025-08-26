@@ -40,6 +40,7 @@ export class WindowsIntegration implements IWindowsIntegration {
     private retryCount = 0;
     private maxRetries = 3;
     private retryDelay = 1000; // 1秒
+    private esmImportWarned = false;
 
     constructor() {
         this.isWindows = process.platform === 'win32';
@@ -401,6 +402,35 @@ export class WindowsIntegration implements IWindowsIntegration {
     async getCurrentActiveWindow(): Promise<WindowInfo | null> {
         if (!this.isWindows) {
             return null;
+        }
+        // まず get-windows のネイティブ実装を試す（高速・安定）。ESMなのでネイティブ dynamic import を使用
+        try {
+            // TypeScript (CJS) では import('...') が require にダウントランスパイルされる場合があるため、
+            // eval を用いてネイティブ dynamic import を強制する
+            const gwModule: any = await (eval('import("get-windows")'));
+            const activeWindow = gwModule?.activeWindow;
+            if (typeof activeWindow === 'function') {
+                const res = await activeWindow();
+                if (res && res.platform === 'windows') {
+                    const title = (res.title || '').toString();
+                    const processName = (res.owner?.name || '').toString();
+                    const pid = Number(res.owner?.processId || 0);
+                    return {
+                        title,
+                        processName,
+                        pid,
+                        x: res.bounds?.x || 0,
+                        y: res.bounds?.y || 0,
+                        width: res.bounds?.width || 0,
+                        height: res.bounds?.height || 0
+                    };
+                }
+            }
+        } catch (e) {
+            if (!this.esmImportWarned) {
+                logger.debug('get-windows によるアクティブウィンドウ取得に失敗。PowerShellにフォールバックします', e);
+                this.esmImportWarned = true;
+            }
         }
 
         return new Promise((resolve) => {

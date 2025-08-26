@@ -17,17 +17,35 @@ export class Settings {
     private configPath: string;
 
     constructor() {
-        this.configPath = path.join(app.getPath('userData'), 'config.json');
+        this.configPath = path.join(this.safeGetPath('userData'), 'config.json');
         this.loadSettings();
+    }
+
+    private safeGetPath(name: 'userData' | 'documents'): string {
+        try {
+            if (app && app.isReady()) {
+                return app.getPath(name);
+            }
+        } catch {}
+        // Electron が未準備のタイミングでも落ちないようフォールバック
+        const home = process.env.USERPROFILE || process.env.HOME || process.cwd();
+        if (name === 'documents') {
+            // Windows の既定のドキュメントを推定
+            const docs = process.env.USERPROFILE ? path.join(process.env.USERPROFILE, 'Documents') : path.join(home, 'Documents');
+            return docs;
+        }
+        // userData フォールバック
+        return path.join(home, 'AppData', 'Roaming', 'win-screenshot-app');
     }
 
     private loadSettings(): void {
         try {
             if (fs.existsSync(this.configPath)) {
                 const config = fs.readJsonSync(this.configPath);
-                this.saveDirectory = config.saveDirectory || path.join(app.getPath('documents'), 'Screenshots');
+                this.saveDirectory = config.saveDirectory || path.join(this.safeGetPath('documents'), 'Screenshots');
                 this.captureInterval = config.captureInterval || 180000; // 3分
-                this.autoStart = config.autoStart || true;
+                // booleanの既定値を正しく反映（falseを潰さない）
+                this.autoStart = typeof config.autoStart === 'boolean' ? config.autoStart : true;
                 this.statisticsConfig = config.statisticsConfig || this.getDefaultStatisticsConfig();
             } else {
                 this.setDefaultSettings();
@@ -38,7 +56,7 @@ export class Settings {
     }
 
     private setDefaultSettings(): void {
-        this.saveDirectory = path.join(app.getPath('documents'), 'Screenshots');
+        this.saveDirectory = path.join(this.safeGetPath('documents'), 'Screenshots');
         this.captureInterval = 180000; // 3分
         this.autoStart = true;
         this.statisticsConfig = this.getDefaultStatisticsConfig();

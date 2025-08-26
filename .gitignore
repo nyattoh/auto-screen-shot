@@ -79,11 +79,16 @@ yarn-error.log*
 # Editor directories and files
 .idea/
 .vscode/
+.claude/
+node_modules/
+←
+.gitignore
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+*.csv
 
 # OS generated files
 .DS_Store

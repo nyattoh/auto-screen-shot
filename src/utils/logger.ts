@@ -29,6 +29,12 @@ export class Logger {
             let userDataPath: string;
             try {
                 userDataPath = app.getPath('userData');
+                // 既定アプリ名 'Electron' のままになる環境向けに、安定した保存先へ切り替え
+                const baseName = userDataPath ? userDataPath.split(/[\\/]/).pop() : '';
+                if (baseName && baseName.toLowerCase() === 'electron') {
+                    const appData = app.getPath('appData');
+                    userDataPath = path.join(appData, 'win-screenshot-app');
+                }
             } catch (e) {
                 // appが準備できていない場合はデフォルトパスを使用
                 userDataPath = path.join(process.cwd(), 'logs');
@@ -42,8 +48,10 @@ export class Logger {
             
             this.logFile = path.join(logsDir, 'app.log');
             
-            // 初期化成功メッセージ
-            console.log('Logger initialized. Log file:', this.logFile);
+            // 初期化成功メッセージ（バックグラウンドモードでは抑制）
+            if (process.env.STARTUP_MODE !== 'background') {
+                console.log('Logger initialized. Log file:', this.logFile);
+            }
         } catch (error) {
             console.error('Logger initialization error:', error);
             // フォールバックとして現在のディレクトリを使用
@@ -69,7 +77,8 @@ export class Logger {
             
             // テスト環境ではJestの終了後ログによる失敗を防ぐため、コンソール出力を抑制
             const isTestEnv = !!process.env.JEST_WORKER_ID;
-            if (!isTestEnv) {
+            const isBackground = process.env.STARTUP_MODE === 'background';
+            if (!isTestEnv && !isBackground) {
                 // コンソールにも出力
                 const consoleMessage = `[${level}] ${message}`;
                 switch (level) {

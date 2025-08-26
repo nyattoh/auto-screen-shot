@@ -17,10 +17,10 @@
   "dependencies": {
     "@types/sqlite3": "^3.1.11",
     "auto-launch": "^5.0.6",
-    "electron": "^28.0.0",
+    "electron": "^28.3.3",
     "fs-extra": "^11.0.0",
     "get-windows": "^9.2.0",
-    "sharp": "^0.30.7",
+    "sharp": "^0.34.3",
     "sqlite3": "^5.1.7",
     "tesseract.js": "^2.1.5",
     "ts-node": "^10.9.0",

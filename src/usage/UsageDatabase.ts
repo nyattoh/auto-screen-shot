@@ -55,6 +55,7 @@ export interface IUsageDatabase {
     getDateRangeSessions(startDate: Date, endDate: Date): Promise<DetailedSession[]>;
     getAvailableDates(): Promise<string[]>;
     getDateUsageSummary(date: Date): Promise<DateUsageSummary>;
+    importFromCSV(csvPath: string): Promise<number>;
 }
 
 export interface HourlySessionData {
@@ -91,18 +92,223 @@ export class UsageDatabase implements IUsageDatabase {
     private maxBackups = 5;
 
     constructor(dbPath?: string) {
-        // Default to user data directory
-        const userDataPath = process.env.APPDATA || process.env.HOME || '.';
-        const appDataPath = path.join(userDataPath, 'win-screenshot-app');
-        this.dbPath = dbPath || path.join(appDataPath, 'usage-statistics.db');
+        // Allow override via env for recovery/testing
+        const override = process.env.WIN_SCREENSHOT_DB_PATH;
+        if (override && override.trim()) {
+            this.dbPath = path.resolve(override);
+        } else {
+            // Default to user data directory
+            const userDataPath = process.env.APPDATA || process.env.HOME || '.';
+            const appDataPath = path.join(userDataPath, 'win-screenshot-app');
+            this.dbPath = dbPath || path.join(appDataPath, 'usage-statistics.db');
+        }
         this.backupPath = this.dbPath.replace('.db', '.backup.db');
+    }
+
+    public getDbPath(): string {
+        return this.dbPath;
     }
 
     async initialize(): Promise<void> {
         const dbDir = path.dirname(this.dbPath);
         fs.ensureDirSync(dbDir);
 
+        // 既存ユーザーの旧DBを新パスに移行（初回のみ）
+        await this.migrateLegacyDatabaseIfNeeded();
+
         return this.initializeWithRetry(3);
+    }
+
+    /**
+     * データが空の場合、バックアップ群から自動統合復元を試みる
+     */
+    public async recoverIfEmpty(): Promise<{ merged: number; sources: number } | null> {
+        try {
+            if (!this.db) return null;
+            const hasData = await this.hasAnySession();
+            if (hasData) return null;
+
+            const sources = await this.findBackupSources(true);
+
+            if (sources.length === 0) {
+                logger.info('復元対象のバックアップが見つかりません');
+                return null;
+            }
+
+            const merged = await this.mergeBackups(sources, true);
+            logger.info('バックアップからの自動復元が完了しました', { merged, sources: sources.length });
+            return { merged, sources: sources.length };
+        } catch (e) {
+            logger.warn('自動復元に失敗しました', e);
+            return null;
+        }
+    }
+
+    private async hasAnySession(): Promise<boolean> {
+        return new Promise((resolve) => {
+            this.db!.get('SELECT 1 FROM usage_sessions LIMIT 1', (err, row) => {
+                if (err) return resolve(false);
+                resolve(!!row);
+            });
+        });
+    }
+
+    private async readSessionsFromExternalDb(externalPath: string): Promise<any[]> {
+        return new Promise((resolve) => {
+            const ext = new sqlite3.Database(externalPath, (err) => {
+                if (err) { resolve([]); return; }
+                ext.all('SELECT window_title,process_name,process_id,application,content,category,start_time,end_time,duration,date FROM usage_sessions', (e, rows) => {
+                    if (e || !rows) { try { ext.close(); } catch {}; resolve([]); return; }
+                    try { ext.close(); } catch {}
+                    resolve(rows);
+                });
+            });
+        });
+    }
+
+    /**
+     * バックアップDB群を現在のDBへマージ
+     * @param backupPaths 対象DBパス
+     * @param seedWithExisting 既存DBのレコードで重複シードを行い重複挿入を防ぐ
+     */
+    private async mergeBackups(backupPaths: string[], seedWithExisting: boolean = false): Promise<number> {
+        if (!this.db) throw new Error('Database not initialized');
+        const seen = new Set<string>();
+        let merged = 0;
+
+        if (seedWithExisting) {
+            try {
+                const existing = await new Promise<any[]>((resolve) => this.db!.all(
+                    'SELECT start_time,end_time,process_name,window_title,duration FROM usage_sessions',
+                    (e, rows) => resolve(rows || [])
+                ));
+                for (const r of existing) {
+                    const key = `${r.start_time}|${r.end_time}|${r.process_name}|${r.window_title}|${r.duration}`;
+                    seen.add(key);
+                }
+                logger.info('重複シード完了', { existing: existing.length });
+            } catch (e) {
+                logger.warn('重複シードに失敗しました', e);
+            }
+        }
+
+        await new Promise<void>((res, rej) => this.db!.run('BEGIN', (e) => e ? rej(e) : res()));
+        try {
+            for (const p of backupPaths) {
+                const rows = await this.readSessionsFromExternalDb(p);
+                for (const r of rows) {
+                    const key = `${r.start_time}|${r.end_time}|${r.process_name}|${r.window_title}|${r.duration}`;
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+                    await new Promise<void>((res, rej) => this.db!.run(
+                        `INSERT INTO usage_sessions (
+                          window_title, process_name, process_id, application, content, category,
+                          start_time, end_time, duration, date
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [r.window_title, r.process_name, r.process_id || 0, r.application, r.content, r.category,
+                         r.start_time, r.end_time, r.duration, r.date],
+                        (e) => e ? rej(e) : res()
+                    ));
+                    merged++;
+                }
+            }
+            await new Promise<void>((res, rej) => this.db!.run('COMMIT', (e) => e ? rej(e) : res()));
+        } catch (e) {
+            await new Promise<void>((res) => this.db!.run('ROLLBACK', () => res()));
+            throw e;
+        }
+        return merged;
+    }
+
+    /**
+     * バックアップソースの探索（AppData内のtimestampedバックアップ + 必要ならリポジトリ直下の旧DB）
+     */
+    private async findBackupSources(includeLegacyRepo: boolean): Promise<string[]> {
+        const sources: string[] = [];
+        try {
+            const dbDir = path.dirname(this.dbPath);
+            const files = await fs.readdir(dbDir);
+            files.filter(f => f.includes('.backup.') && f.endsWith('.db'))
+                .forEach(f => sources.push(path.join(dbDir, f)));
+        } catch {}
+
+        if (includeLegacyRepo) {
+            const cwd = process.cwd();
+            try {
+                const repoFiles = await fs.readdir(cwd);
+                repoFiles.forEach(f => {
+                    if (/^usage-statistics\.backup\..*\.db$/i.test(f) || /^usage_data\.db$/i.test(f) || /^usage-statistics\.db$/i.test(f)) {
+                        sources.push(path.join(cwd, f));
+                    }
+                });
+            } catch {}
+        }
+
+        // 新しい順に
+        sources.sort();
+        return sources;
+    }
+
+    /**
+     * 強制的にバックアップ群からマージ復元を実行（UIから手動呼び出し用）
+     */
+    public async restoreFromBackups(options?: { includeLegacy?: boolean }): Promise<{ merged: number; sources: number }> {
+        const includeLegacy = options?.includeLegacy ?? true;
+        const sources = await this.findBackupSources(includeLegacy);
+        if (sources.length === 0) return { merged: 0, sources: 0 };
+        const merged = await this.mergeBackups(sources, true);
+        return { merged, sources: sources.length };
+    }
+
+    /**
+     * 全レコードのdate列を start_time のローカル日付で再計算して正規化
+     */
+    public async normalizeDates(): Promise<{ updated: number; total: number }> {
+        if (!this.db) throw new Error('Database not initialized');
+        const rows: any[] = await new Promise((resolve) =>
+            this.db!.all('SELECT id, start_time, date FROM usage_sessions', (e, r) => resolve(r || []))
+        );
+        let updated = 0;
+        for (const r of rows) {
+            const d = new Date(r.start_time);
+            if (isNaN(d.getTime())) continue;
+            const newDate = this.formatDate(d);
+            if (newDate !== r.date) {
+                await new Promise<void>((res, rej) => this.db!.run(
+                    'UPDATE usage_sessions SET date = ? WHERE id = ?',
+                    [newDate, r.id],
+                    (e) => e ? rej(e) : res()
+                ));
+                updated++;
+            }
+        }
+        logger.info('日付正規化が完了しました', { updated, total: rows.length });
+        return { updated, total: rows.length };
+    }
+
+    /**
+     * 旧配置のDBファイルが存在する場合は新しい保存場所へ移行
+     */
+    private async migrateLegacyDatabaseIfNeeded(): Promise<void> {
+        try {
+            const existsNew = await fs.pathExists(this.dbPath);
+            if (existsNew) return;
+
+            const legacyCandidates = [
+                path.resolve(process.cwd(), 'usage_data.db'),
+                path.resolve(process.cwd(), 'usage-statistics.db')
+            ];
+
+            for (const legacyPath of legacyCandidates) {
+                if (await fs.pathExists(legacyPath)) {
+                    await fs.copy(legacyPath, this.dbPath);
+                    logger.info('旧データベースを新パスへ移行しました', { from: legacyPath, to: this.dbPath });
+                    return;
+                }
+            }
+        } catch (error) {
+            logger.warn('旧データベース移行に失敗/スキップ', error);
+        }
     }
 
     private async initializeWithRetry(retryCount: number): Promise<void> {
@@ -266,16 +472,41 @@ export class UsageDatabase implements IUsageDatabase {
                 return;
             }
 
-            const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-            const timestampedBackupPath = this.backupPath.replace('.backup.db', `.backup.${timestamp}.db`);
-            
-            await fs.copy(this.dbPath, timestampedBackupPath);
-            await fs.copy(this.dbPath, this.backupPath); // 最新のバックアップ
-            
+            const dbDir = path.dirname(this.dbPath);
+            // 直近のタイムスタンプ付きバックアップを取得
+            let latestTimestampedMtime: Date | null = null;
+            try {
+                const files = await fs.readdir(dbDir);
+                const backupFiles = files
+                    .filter(file => file.includes('.backup.') && file.endsWith('.db'))
+                    .map(file => ({
+                        name: file,
+                        path: path.join(dbDir, file),
+                        mtime: fs.statSync(path.join(dbDir, file)).mtime
+                    }))
+                    .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+                latestTimestampedMtime = backupFiles.length > 0 ? backupFiles[0].mtime : null;
+            } catch {}
+
+            // 1日以内に作られたバックアップがある場合は、タイムスタンプ付きの新規作成をスキップ
+            const now = new Date();
+            const oneDayMs = 24 * 60 * 60 * 1000;
+            const shouldCreateTimestamped = !latestTimestampedMtime || (now.getTime() - latestTimestampedMtime.getTime() > oneDayMs);
+
+            if (shouldCreateTimestamped) {
+                const timestamp = now.toISOString().replace(/[:.]/g, '-');
+                const timestampedBackupPath = this.backupPath.replace('.backup.db', `.backup.${timestamp}.db`);
+                await fs.copy(this.dbPath, timestampedBackupPath);
+                logger.debug(`データベースバックアップを作成しました: ${path.basename(timestampedBackupPath)}`);
+            } else {
+                logger.debug('最近のバックアップが存在するため、タイムスタンプ付きバックアップはスキップしました');
+            }
+
+            // 常に「最新」バックアップは更新しておく
+            await fs.copy(this.dbPath, this.backupPath);
+
             // 古いバックアップを削除（最大数を超えた場合）
             await this.cleanupOldBackups();
-            
-            logger.debug(`データベースバックアップを作成しました: ${timestampedBackupPath}`);
         } catch (error) {
             logger.warn('データベースバックアップの作成に失敗しました', error);
             // バックアップ失敗は致命的ではないので続行
@@ -711,6 +942,94 @@ export class UsageDatabase implements IUsageDatabase {
         return field;
     }
 
+    /**
+     * CSVをインポート（エクスポートと互換の列順）
+     * ヘッダ: Date,Application,Content,Category,Window Title,Process Name,Start Time,End Time,Duration (minutes)
+     */
+    async importFromCSV(csvPath: string): Promise<number> {
+        if (!this.db) throw new Error('Database not initialized');
+        const content = await fs.readFile(csvPath, 'utf8');
+        const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
+        if (lines.length <= 1) return 0; // header only or empty
+
+        const header = lines[0];
+        const expected = 'Date,Application,Content,Category,Window Title,Process Name,Start Time,End Time,Duration (minutes)';
+        if (!header.startsWith('Date,')) {
+            logger.warn('CSVヘッダが期待と異なります', { header });
+        }
+
+        const parseLine = (line: string): string[] => {
+            const out: string[] = [];
+            let cur = '';
+            let inQuotes = false;
+            for (let i = 0; i < line.length; i++) {
+                const ch = line[i];
+                if (inQuotes) {
+                    if (ch === '"') {
+                        if (line[i + 1] === '"') { cur += '"'; i++; } else { inQuotes = false; }
+                    } else {
+                        cur += ch;
+                    }
+                } else {
+                    if (ch === ',') { out.push(cur); cur = ''; }
+                    else if (ch === '"') { inQuotes = true; }
+                    else { cur += ch; }
+                }
+            }
+            out.push(cur);
+            return out;
+        };
+
+        let imported = 0;
+        await new Promise<void>((res, rej) => this.db!.run('BEGIN', e => e ? rej(e) : res()));
+        try {
+            for (let idx = 1; idx < lines.length; idx++) {
+                const cols = parseLine(lines[idx]);
+                if (cols.length < 9) continue;
+                const dateStrRaw = (cols[0] || '').trim();
+                const application = (cols[1] || '').trim();
+                const contentStr = (cols[2] || '').trim();
+                const category = (cols[3] || '').trim();
+                const windowTitle = (cols[4] || '').trim();
+                const processName = (cols[5] || '').trim();
+                const startTime = (cols[6] || '').trim();
+                const endTime = (cols[7] || '').trim();
+                const durationMin = parseInt((cols[8] || '0').trim(), 10) || 0;
+                // date正規化（YYYY-MM-DD）。無効/空ならstartTimeから導出
+                let dForDate: Date | null = null;
+                if (dateStrRaw) {
+                    const tryDate = new Date(dateStrRaw);
+                    if (!isNaN(tryDate.getTime())) dForDate = tryDate; 
+                }
+                if (!dForDate && startTime) {
+                    const tryDate2 = new Date(startTime);
+                    if (!isNaN(tryDate2.getTime())) dForDate = tryDate2;
+                }
+                const dateStr = dForDate ? this.formatDate(dForDate) : (dateStrRaw || '');
+                const durationMs = durationMin * 60000;
+                await new Promise<void>((res, rej) => this.db!.run(
+                    `INSERT INTO usage_sessions (
+                        window_title, process_name, process_id, application, content, category,
+                        start_time, end_time, duration, date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [windowTitle, processName, 0, application, contentStr, category,
+                        startTime, endTime, durationMs, dateStr],
+                    e => e ? rej(e) : res()
+                ));
+                imported++;
+            }
+            await new Promise<void>((res, rej) => this.db!.run('COMMIT', e => e ? rej(e) : res()));
+            logger.info('CSVインポート完了', { imported, csvPath });
+            // インポート後に日付を正規化（安全側）
+            try { await this.normalizeDates(); } catch {}
+        } catch (e) {
+            await new Promise<void>(res => this.db!.run('ROLLBACK', () => res()));
+            logger.error('CSVインポート失敗', e);
+            throw e;
+        }
+        return imported;
+    }
+
     async getDetailedSessions(date: Date): Promise<DetailedSession[]> {
         if (!this.db) {
             throw new Error('Database not initialized');
@@ -858,22 +1177,28 @@ export class UsageDatabase implements IUsageDatabase {
             throw new Error('Database not initialized');
         }
 
-        return new Promise((resolve, reject) => {
-            const sql = `
-                SELECT DISTINCT date 
-                FROM usage_sessions 
-                ORDER BY date DESC
-            `;
-
+        const runSql = (sql: string) => new Promise<string[]>((resolve, reject) => {
             this.db!.all(sql, (err, rows: any[]) => {
                 if (err) {
                     reject(new Error(`Failed to get available dates: ${err.message}`));
                 } else {
-                    const dates = rows.map(row => row.date);
+                    const dates = (rows || []).map(r => (r.date || '').trim()).filter(Boolean);
                     resolve(dates);
                 }
             });
         });
+
+        // 1) まずはdate列から
+        let dates: string[] = await runSql(`SELECT DISTINCT date AS date FROM usage_sessions WHERE date IS NOT NULL AND TRIM(date) <> '' ORDER BY date DESC`)
+            .catch(() => [] as string[]);
+
+        // 2) 空なら start_time からYYYY-MM-DDを抽出（フォールバック）
+        if (!dates || dates.length === 0) {
+            dates = await runSql(`SELECT DISTINCT substr(start_time,1,10) AS date FROM usage_sessions WHERE start_time IS NOT NULL AND TRIM(start_time) <> '' ORDER BY date DESC`)
+                .catch(() => [] as string[]);
+        }
+
+        return dates || [];
     }
 
     async getDateUsageSummary(date: Date): Promise<DateUsageSummary> {

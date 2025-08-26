@@ -193,7 +193,7 @@ export class ShutdownManager implements IShutdownManager {
             await this.cleanupForRestart();
 
             // 新しいプロセスを起動
-            const restartCommand = process.argv[0]; // node
+            const restartCommand = process.argv[0]; // node or electron
             const restartArgs = process.argv.slice(1); // スクリプトと引数
 
             logger.info('新しいプロセスを起動します', {

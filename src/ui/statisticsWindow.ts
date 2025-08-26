@@ -21,6 +21,19 @@ export class StatisticsWindow {
         this.initializeDatabase();
     }
 
+    public async reopenDatabase(): Promise<void> {
+        try {
+            if (this.usageDatabase) {
+                await this.usageDatabase.close();
+            }
+            this.usageDatabase = new UsageDatabase();
+            await this.usageDatabase.initialize();
+            logger.info('統計ウィンドウ: データベース接続を再オープンしました');
+        } catch (error) {
+            logger.error('統計ウィンドウ: データベース再オープンに失敗', error);
+        }
+    }
+
     private async initializeDatabase(): Promise<void> {
         try {
             await this.usageDatabase.initialize();

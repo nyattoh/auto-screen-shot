@@ -31,10 +31,9 @@ export class TimeTracker implements ITimeTracker {
             this.endSession();
         }
 
-        // アイドル状態の場合はセッションを開始しない
-        if (this.isIdle()) {
-            return;
-        }
+        // 以前はアイドル時にセッションを作らなかったが、
+        // 実運用では「ウィンドウが変わらない=アイドル判定」で記録されない問題が出るため、
+        // ここでは開始をスキップしない（必要なら後段でカテゴリ分けで表現する）。
 
         // 新しいセッションを開始
         const contentInfo = this.identifyContent(windowInfo);

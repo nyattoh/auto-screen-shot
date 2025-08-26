@@ -453,6 +453,7 @@
         let allSessions = [];
 
         function refreshStats() {
+            reloadAvailableDates();
             ipcRenderer.send('request-statistics');
         }
 
@@ -522,6 +523,29 @@
                 }).join('');
             } else {
                 historyList.innerHTML = '<div class="no-data">まだスクリーンショットが撮影されていません</div>';
+            }
+        }
+
+        async function reloadAvailableDates() {
+            try {
+                const dates = await ipcRenderer.invoke('get-available-dates');
+                const quickSelect = document.getElementById('quickDateSelect');
+                // 既存のYYYY-MM-DDオプションを削除
+                const toRemove = [];
+                for (let i = 0; i < quickSelect.options.length; i++) {
+                    const v = quickSelect.options[i].value || '';
+                    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) toRemove.push(quickSelect.options[i]);
+                }
+                toRemove.forEach(o => o.remove());
+                // 新しい日付をすべて追加
+                (dates || []).forEach(date => {
+                    const opt = document.createElement('option');
+                    opt.value = date;
+                    opt.textContent = new Date(date).toLocaleDateString('ja-JP');
+                    quickSelect.appendChild(opt);
+                });
+            } catch (e) {
+                console.error('利用可能日付の再読み込みに失敗', e);
             }
         }
 
@@ -620,11 +644,18 @@
                         selectedDate.setDate(selectedDate.getDate() - 1);
                         break;
                     case 'week':
-                        // 過去7日間は別の処理が必要
-                        alert('過去7日間表示は今後実装予定です');
+                        // 過去7日間の集計を表示
+                        await loadLast7Days();
                         return;
+                    default:
+                        // YYYY-MM-DD 形式が選ばれたとき
+                        if (/^\d{4}-\d{2}-\d{2}$/.test(quickSelect.value)) {
+                            selectedDate = new Date(quickSelect.value);
+                        }
                 }
-                                dateInput.value = formatLocalDate(selectedDate);
+                if (selectedDate && !isNaN(selectedDate.getTime())) {
+                    dateInput.value = formatLocalDate(selectedDate);
+                }
             } else if (dateInput.value) {
                 selectedDate = new Date(dateInput.value);
             } else {
@@ -632,8 +663,83 @@
                 return;
             }
             
-                        currentDate = formatLocalDate(selectedDate);
+            if (!selectedDate || isNaN(selectedDate.getTime())) {
+                alert('有効な日付を選択してください');
+                return;
+            }
+
+            currentDate = formatLocalDate(selectedDate);
             await loadDateSessions(currentDate);
+        }
+
+        // 直近7日の集計表示
+        async function loadLast7Days() {
+            try {
+                const end = new Date();
+                const start = new Date();
+                start.setDate(end.getDate() - 6);
+
+                const startStr = formatLocalDate(start);
+                const endStr = formatLocalDate(end);
+
+                const sessions = await ipcRenderer.invoke('get-date-range-sessions', startStr, endStr);
+
+                const byDate = new Map();
+                for (const s of sessions) {
+                    const d = s.date;
+                    const prev = byDate.get(d) || { totalMs: 0, apps: new Map() };
+                    prev.totalMs += s.duration;
+                    prev.apps.set(s.application, (prev.apps.get(s.application) || 0) + s.duration);
+                    byDate.set(d, prev);
+                }
+
+                const summaryContainer = document.getElementById('selectedDateSummary');
+                const days = [];
+                for (let i = 0; i < 7; i++) {
+                    const d = new Date(start);
+                    d.setDate(start.getDate() + i);
+                    const key = formatLocalDate(d);
+                    const item = byDate.get(key) || { totalMs: 0, apps: new Map() };
+                    const topApps = Array.from(item.apps.entries())
+                        .sort((a,b)=>b[1]-a[1])
+                        .slice(0,3)
+                        .map(([app, ms]) => `${app}: ${Math.round(ms/60000)}分`);
+                    days.push({ key, label: new Date(key).toLocaleDateString('ja-JP'), totalMin: Math.round(item.totalMs/60000), topApps });
+                }
+
+                summaryContainer.innerHTML = `
+                    <div class="summary-stats">
+                        <div class="summary-item">
+                            <div class="summary-number">${days.reduce((a,b)=>a+b.totalMin,0)}分</div>
+                            <div class="summary-label">直近7日 合計</div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-number">${days.filter(d=>d.totalMin>0).length}/7</div>
+                            <div class="summary-label">データ日数</div>
+                        </div>
+                    </div>
+                    <h4 style="margin-top:12px;">📅 日別サマリー（直近7日）</h4>
+                    <div>
+                        ${days.map(d => `
+                            <div style=\"padding:10px; border-bottom:1px solid #eee;\">
+                                <div style=\"display:flex; justify-content:space-between;\">
+                                    <strong>${d.label}</strong>
+                                    <span style=\"color:#4CAF50; font-weight:bold;\">${d.totalMin}分</span>
+                                </div>
+                                <div style=\"font-size:12px; color:#666; margin-top:4px;\">
+                                    ${d.topApps.length ? '上位: ' + d.topApps.join(' / ') : 'データ無し'}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+
+                // 詳細テーブルは非表示
+                document.getElementById('sessionsDetailContainer').style.display = 'none';
+            } catch (error) {
+                console.error('7日集計の取得に失敗', error);
+                document.getElementById('selectedDateSummary').innerHTML = '<p style="color:red;">7日集計の取得に失敗しました</p>';
+            }
         }
         
         async function loadDateSessions(dateStr) {
@@ -800,7 +906,7 @@
                 
                 // 利用可能な日付をクイック選択に追加
                 if (availableDates.length > 0) {
-                    availableDates.slice(0, 10).forEach(date => {
+                    availableDates.forEach(date => {
                         const option = document.createElement('option');
                         option.value = date;
                         option.textContent = new Date(date).toLocaleDateString('ja-JP');
